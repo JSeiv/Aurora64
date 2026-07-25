@@ -9,6 +9,18 @@ on:
   workflow_dispatch:
 
 jobs:
+  native-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run native host tests
+        run: make host-test
+
+      - name: Run native host tests with sanitizers
+        run: make host-test-sanitize
+
   build-menu:
     runs-on: ubuntu-latest
     permissions:

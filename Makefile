@@ -13,7 +13,16 @@ AURORA64_HOME ?= 0
 AURORA64_LAUNCH_PROOF ?= 0
 BUILD_TIMESTAMP = "$(shell TZ='UTC' date "+%Y-%m-%d %H:%M:%S %:z")"
 
+HOST_TEST_GOALS := host-test host-test-sanitize
+ifneq ($(strip $(MAKECMDGOALS)),)
+ifeq ($(strip $(filter-out $(HOST_TEST_GOALS),$(MAKECMDGOALS))),)
+SKIP_N64_MK := 1
+endif
+endif
+
+ifndef SKIP_N64_MK
 include $(N64_INST)/include/n64.mk
+endif
 
 N64_ROM_SAVETYPE = none
 N64_ROM_RTC = 1
@@ -216,8 +225,13 @@ else
 endif
 .PHONY: run-debug-upload
 
-# test:
-#   TODO: run tests
+host-test:
+	$(MAKE) -C tests test
+.PHONY: host-test
+
+host-test-sanitize:
+	$(MAKE) -C tests test-sanitize
+.PHONY: host-test-sanitize
 
 .FORCE:
 
