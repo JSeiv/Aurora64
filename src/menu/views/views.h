@@ -49,6 +49,21 @@ void view_home_init(menu_t *menu);
 void view_home_display(menu_t *menu, surface_t *display);
 
 /**
+ * @brief Initialize the static library view.
+ *
+ * @param menu Pointer to the menu structure.
+ */
+void view_static_library_init(menu_t *menu);
+
+/**
+ * @brief Display the static library view.
+ *
+ * @param menu Pointer to the menu structure.
+ * @param display Pointer to the display surface.
+ */
+void view_static_library_display(menu_t *menu, surface_t *display);
+
+/**
  * @brief Initialize the browser view.
  *
  * @param menu Pointer to the menu structure.
@@ -248,6 +263,17 @@ void view_load_rom_init(menu_t *menu);
  * @param display Pointer to the display surface.
  */
 void view_load_rom_display(menu_t *menu, surface_t *display);
+
+/**
+ * @brief Set the pending ROM path and return mode for the load ROM view.
+ *
+ * Unconditionally takes ownership of @p rom_path, including when it is NULL.
+ *
+ * @param menu Pointer to the menu structure.
+ * @param rom_path Pending ROM path, or NULL; ownership is transferred unconditionally.
+ * @param return_mode Menu mode to return to after loading.
+ */
+void view_load_rom_set_pending_path(menu_t *menu, path_t *rom_path, menu_mode_t return_mode);
 
 /**
  * @brief Initialize the load disk view.

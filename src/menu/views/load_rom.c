@@ -28,6 +28,17 @@ static const uint16_t metadata_image_filename_cache_length = sizeof(metadata_ima
 static bool metadata_image_available[sizeof(metadata_image_filename_cache) / sizeof(metadata_image_filename_cache[0])] = {false};
 static bool metadata_images_scanned = false;
 
+static menu_mode_t validate_return_mode(menu_mode_t return_mode) {
+#if FEATURE_AURORA_HOME_ENABLED && FEATURE_AURORA_LAUNCH_PROOF_ENABLED
+    if (return_mode == MENU_MODE_STATIC_LIBRARY) {
+        return MENU_MODE_STATIC_LIBRARY;
+    }
+#else
+    (void)return_mode;
+#endif
+    return MENU_MODE_BROWSER;
+}
+
 static void scan_metadata_images(menu_t *menu) {
     if (metadata_images_scanned) {
         return;
@@ -277,10 +288,41 @@ static void set_tv_type (menu_t *menu, void *arg) {
 }
 #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
 static void set_autoload_type (menu_t *menu, void *arg) {
+    (void)arg;
+
+    if (menu->load.rom_path == NULL || path_get(menu->load.rom_path) == NULL || path_get(menu->load.rom_path)[0] == '\0') {
+        return;
+    }
+
+    char *active_filename = path_last_get(menu->load.rom_path);
+    if (active_filename == NULL || active_filename[0] == '\0') {
+        return;
+    }
+
+    char *autoload_filename = strdup(active_filename);
+    if (autoload_filename == NULL) {
+        return;
+    }
+
+    path_t *autoload_directory = path_clone(menu->load.rom_path);
+    if (autoload_directory == NULL) {
+        free(autoload_filename);
+        return;
+    }
+    path_pop(autoload_directory);
+
+    char *relative_directory = strip_fs_prefix(path_get(autoload_directory));
+    char *autoload_path = relative_directory == NULL ? NULL : strdup(relative_directory);
+    path_free(autoload_directory);
+    if (autoload_path == NULL) {
+        free(autoload_filename);
+        return;
+    }
+
     free(menu->settings.rom_autoload_path);
-    menu->settings.rom_autoload_path = strdup(strip_fs_prefix(path_get(menu->browser.directory)));
+    menu->settings.rom_autoload_path = autoload_path;
     free(menu->settings.rom_autoload_filename);
-    menu->settings.rom_autoload_filename = strdup(menu->browser.entry->name);
+    menu->settings.rom_autoload_filename = autoload_filename;
     // FIXME: add a confirmation box here! (press start on reboot)
     menu->settings.rom_autoload_enabled = true;
     settings_save(&menu->settings);
@@ -399,6 +441,9 @@ static component_context_menu_t set_patcher_options_menu = { .list = {
 
 static void set_menu_next_mode (menu_t *menu, void *arg) {
     menu_mode_t next_mode = (menu_mode_t) (arg);
+    if (next_mode == MENU_MODE_DATEL_CODE_EDITOR) {
+        menu->load.resume_from_datel = true;
+    }
     menu->next_mode = next_mode;
 }
 
@@ -427,7 +472,7 @@ static void process (menu_t *menu) {
         menu->load_pending.rom_file = true;
     } else if (menu->actions.back) {
         sound_play_effect(SFX_EXIT);
-        menu->next_mode = MENU_MODE_BROWSER;
+        menu->next_mode = validate_return_mode(menu->load.return_mode);
     } else if (menu->actions.options) {
         ui_components_context_menu_show(&options_context_menu);
         sound_play_effect(SFX_SETTING);
@@ -510,7 +555,8 @@ static void draw (menu_t *menu, surface_t *d) {
             STL_DEFAULT,
             ALIGN_LEFT, VALIGN_TOP,
             "A: Load and run ROM\n"
-            "B: Back\n"
+            "%s\n",
+            validate_return_mode(menu->load.return_mode) == MENU_MODE_STATIC_LIBRARY ? "B: Library" : "B: Back"
         );
 
         ui_components_actions_bar_text_draw(
@@ -671,53 +717,154 @@ static void deinit (void) {
     for (uint16_t i = 0; i < metadata_image_filename_cache_length; i++) {
         metadata_image_available[i] = false;
     }
+
+    ui_components_context_menu_init(&options_context_menu);
+    show_extra_info_message = false;
+    show_advanced_info_message = false;
 }
 
+static void release_active_allocations(menu_t *menu) {
+    deinit();
+    rom_info_free_meta(&menu->load.rom_info);
+    path_free(menu->load.rom_path);
+    menu->load.rom_path = NULL;
+    rom_filename = NULL;
+}
+
+static void clear_active_details(menu_t *menu, bool clear_load_pending) {
+    release_active_allocations(menu);
+    menu->load.load_history_id = -1;
+    menu->load.load_favorite_id = -1;
+    menu->load.resume_from_datel = false;
+    menu->load.return_mode = MENU_MODE_BROWSER;
+    menu->load.pending_return_mode = MENU_MODE_BROWSER;
+    if (clear_load_pending) {
+        menu->load_pending.rom_file = false;
+    }
+}
+
+static bool resolve_rom_path(menu_t *menu, bool *autoload, bool *resume) {
+    enum {
+        ROM_SOURCE_EXPLICIT,
+        ROM_SOURCE_HISTORY,
+        ROM_SOURCE_FAVORITE,
+        ROM_SOURCE_BROWSER,
+    } source;
+    path_t *selected_path = NULL;
+    menu_mode_t return_mode = MENU_MODE_BROWSER;
+    int32_t selected_id = -1;
+
+    *autoload = false;
+    *resume = false;
+
+#ifdef FEATURE_AUTOLOAD_ROM_ENABLED
+    if (menu->settings.rom_autoload_enabled && path_has_value(menu->load.rom_path) && menu->load_pending.rom_file) {
+        deinit();
+        rom_info_free_meta(&menu->load.rom_info);
+        rom_filename = NULL;
+        rom_filename = path_last_get(menu->load.rom_path);
+        menu->load.load_history_id = -1;
+        menu->load.load_favorite_id = -1;
+        menu->load.resume_from_datel = false;
+        menu->load.return_mode = MENU_MODE_BROWSER;
+        *autoload = true;
+        return true;
+    }
+#endif
+
+    if (menu->load.resume_from_datel) {
+        menu->load.resume_from_datel = false;
+        if (path_has_value(menu->load.rom_path)) {
+            *resume = true;
+            return true;
+        }
+
+        clear_active_details(menu, true);
+        menu_show_error(menu, convert_error_message(ROM_ERR_NO_FILE));
+        return false;
+    }
+
+    if (menu->load.pending_rom_path_set) {
+        source = ROM_SOURCE_EXPLICIT;
+        return_mode = validate_return_mode(menu->load.pending_return_mode);
+    } else if (menu->load.load_history_id != -1) {
+        source = ROM_SOURCE_HISTORY;
+        selected_id = menu->load.load_history_id;
+    } else if (menu->load.load_favorite_id != -1) {
+        source = ROM_SOURCE_FAVORITE;
+        selected_id = menu->load.load_favorite_id;
+    } else {
+        source = ROM_SOURCE_BROWSER;
+    }
+
+    clear_active_details(menu, true);
+
+    switch (source) {
+        case ROM_SOURCE_EXPLICIT:
+            selected_path = menu->load.pending_rom_path;
+            menu->load.pending_rom_path = NULL;
+            menu->load.pending_rom_path_set = false;
+            break;
+        case ROM_SOURCE_HISTORY:
+            if (selected_id >= 0 && selected_id < HISTORY_COUNT &&
+                menu->bookkeeping.history_items[selected_id].bookkeeping_type == BOOKKEEPING_TYPE_ROM &&
+                path_has_value(menu->bookkeeping.history_items[selected_id].primary_path)) {
+                selected_path = path_clone(menu->bookkeeping.history_items[selected_id].primary_path);
+            }
+            break;
+        case ROM_SOURCE_FAVORITE:
+            if (selected_id >= 0 && selected_id < FAVORITES_COUNT &&
+                menu->bookkeeping.favorite_items[selected_id].bookkeeping_type == BOOKKEEPING_TYPE_ROM &&
+                path_has_value(menu->bookkeeping.favorite_items[selected_id].primary_path)) {
+                selected_path = path_clone(menu->bookkeeping.favorite_items[selected_id].primary_path);
+            }
+            break;
+        case ROM_SOURCE_BROWSER:
+            if (path_has_value(menu->browser.directory) && menu->browser.entry != NULL &&
+                menu->browser.entry->name != NULL && menu->browser.entry->name[0] != '\0') {
+                selected_path = path_clone_push(menu->browser.directory, menu->browser.entry->name);
+            }
+            break;
+    }
+
+    if (!path_has_value(selected_path)) {
+        path_free(selected_path);
+        menu_show_error(menu, convert_error_message(ROM_ERR_NO_FILE));
+        return false;
+    }
+
+    menu->load.rom_path = selected_path;
+    menu->load.return_mode = return_mode;
+    rom_filename = path_last_get(menu->load.rom_path);
+    return true;
+}
+
+void view_load_rom_set_pending_path(menu_t *menu, path_t *rom_path, menu_mode_t return_mode) {
+    path_free(menu->load.pending_rom_path);
+    menu->load.pending_rom_path = rom_path;
+    menu->load.pending_rom_path_set = true;
+    menu->load.pending_return_mode = validate_return_mode(return_mode);
+    menu->load.load_history_id = -1;
+    menu->load.load_favorite_id = -1;
+}
 
 void view_load_rom_init (menu_t *menu) {
-#ifdef FEATURE_AUTOLOAD_ROM_ENABLED
-    if (!menu->settings.rom_autoload_enabled) {
-#endif
-        if (menu->load.rom_path) {
-            rom_info_free_meta(&menu->load.rom_info);
-            path_free(menu->load.rom_path);
-        }
-
-        if(menu->load.load_history_id != -1) {
-            menu->load.rom_path = path_clone(menu->bookkeeping.history_items[menu->load.load_history_id].primary_path);
-        } else if(menu->load.load_favorite_id != -1) {
-            menu->load.rom_path = path_clone(menu->bookkeeping.favorite_items[menu->load.load_favorite_id].primary_path);
-        } else {
-            menu->load.rom_path = path_clone_push(menu->browser.directory, menu->browser.entry->name);
-        }
-
-        rom_filename = path_last_get(menu->load.rom_path);
-#ifdef FEATURE_AUTOLOAD_ROM_ENABLED
-    }
-#endif 
-
-    if (show_extra_info_message) {
-        show_extra_info_message = false;
-    }
-    if (show_advanced_info_message) {
-        show_advanced_info_message = false;
+    bool autoload = false;
+    bool resume = false;
+    if (!resolve_rom_path(menu, &autoload, &resume) || resume) {
+        return;
     }
 
     debugf("Load ROM: loading ROM info from %s\n", path_get(menu->load.rom_path));
     rom_err_t err = rom_config_load(menu->load.rom_path, &menu->load.rom_info);
     if (err != ROM_OK) {
-        rom_info_free_meta(&menu->load.rom_info);
-        path_free(menu->load.rom_path);
-        menu->load.rom_path = NULL;
-        //disable the attempt at loading the favorite / history
-        menu->load.load_history_id = -1;
-        menu->load.load_favorite_id = -1;
+        clear_active_details(menu, true);
         // FIXME: use bookkeeping_favorite_remove() here instead of just showing an error and leaving the broken favorite / history item in place
         menu_show_error(menu, convert_error_message(err));
         return;
     }
 #ifdef FEATURE_AUTOLOAD_ROM_ENABLED
-    if (!menu->settings.rom_autoload_enabled) {
+    if (!autoload) {
 #endif
         current_metadata_image_index = 0;
         boxart = ui_components_boxart_init(menu->storage_prefix, menu->load.rom_info.game_code, menu->load.rom_info.title, IMAGE_BOXART_FRONT);
@@ -738,9 +885,10 @@ void view_load_rom_display (menu_t *menu, surface_t *display) {
         load(menu);
     }
 
-    if (menu->next_mode != MENU_MODE_LOAD_ROM && menu->next_mode != MENU_MODE_DATEL_CODE_EDITOR) {
-        menu->load.load_history_id = -1;
-        menu->load.load_favorite_id = -1;
+    if (menu->next_mode == MENU_MODE_BOOT) {
         deinit();
+    } else if (menu->next_mode != MENU_MODE_LOAD_ROM &&
+               menu->next_mode != MENU_MODE_DATEL_CODE_EDITOR) {
+        clear_active_details(menu, true);
     }
 }

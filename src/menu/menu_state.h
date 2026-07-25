@@ -26,6 +26,7 @@ typedef enum {
     MENU_MODE_NONE,
     MENU_MODE_STARTUP,
     MENU_MODE_HOME,
+    MENU_MODE_STATIC_LIBRARY,
     MENU_MODE_BROWSER,
     MENU_MODE_FILE_INFO,
     MENU_MODE_SYSTEM_INFO,
@@ -122,6 +123,10 @@ typedef struct {
     } home;
 
     struct {
+        int32_t selected;
+    } static_library;
+
+    struct {
         menu_mode_t return_mode;
     } credits;
 
@@ -140,6 +145,11 @@ typedef struct {
 
     struct {
         path_t *rom_path;
+        path_t *pending_rom_path;
+        bool pending_rom_path_set;
+        menu_mode_t pending_return_mode;
+        menu_mode_t return_mode;
+        bool resume_from_datel;
         rom_info_t rom_info;
         disk_slot_t disk_slots;
         int32_t load_history_id;

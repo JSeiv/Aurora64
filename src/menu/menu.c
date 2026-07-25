@@ -146,8 +146,15 @@ static void menu_deinit (menu_t *menu) {
 
     hdmi_send_game_id(menu->boot_params);
 
-    path_free(menu->load.disk_slots.primary.disk_path);
+    rom_info_free_meta(&menu->load.rom_info);
     path_free(menu->load.rom_path);
+    menu->load.rom_path = NULL;
+    path_free(menu->load.pending_rom_path);
+    menu->load.pending_rom_path = NULL;
+    menu->load.pending_rom_path_set = false;
+    menu->load_pending.rom_file = false;
+
+    path_free(menu->load.disk_slots.primary.disk_path);
     for (int i = 0; i < menu->browser.entries; i++) {
         free(menu->browser.list[i].name);
     }
@@ -181,6 +188,7 @@ typedef const struct {
 static view_t menu_views[] = {
     { MENU_MODE_STARTUP, view_startup_init, view_startup_display },
     { MENU_MODE_HOME, view_home_init, view_home_display },
+    { MENU_MODE_STATIC_LIBRARY, view_static_library_init, view_static_library_display },
     { MENU_MODE_BROWSER, view_browser_init, view_browser_display },
     { MENU_MODE_FILE_INFO, view_file_info_init, view_file_info_display },
     { MENU_MODE_SYSTEM_INFO, view_system_info_init, view_system_info_display },

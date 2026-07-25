@@ -23,7 +23,11 @@ static const char *const home_labels[HOME_CARD_COUNT] = {
     "Favorites\n(Placeholder)",
     "Pearl's Games\n(Placeholder)",
     "Play Together\n(Placeholder)",
+#if FEATURE_AURORA_HOME_ENABLED && FEATURE_AURORA_LAUNCH_PROOF_ENABLED
+    "All Games",
+#else
     "All Games\n(Placeholder)",
+#endif
 };
 
 static void process (menu_t *menu) {
@@ -48,6 +52,12 @@ static void process (menu_t *menu) {
             sound_play_effect(SFX_ENTER);
             menu->next_mode = MENU_MODE_BROWSER;
         }
+#if FEATURE_AURORA_HOME_ENABLED && FEATURE_AURORA_LAUNCH_PROOF_ENABLED
+        else if (menu->home.selected == 5) {
+            sound_play_effect(SFX_ENTER);
+            menu->next_mode = MENU_MODE_STATIC_LIBRARY;
+        }
+#endif
     }
 
     if (selection_changed) {
@@ -56,6 +66,17 @@ static void process (menu_t *menu) {
 }
 
 static void draw (menu_t *menu, surface_t *display) {
+    char *action_text = "Placeholder";
+
+    if (menu->home.selected == 0) {
+        action_text = "A: Browse files";
+    }
+#if FEATURE_AURORA_HOME_ENABLED && FEATURE_AURORA_LAUNCH_PROOF_ENABLED
+    else if (menu->home.selected == 5) {
+        action_text = "A: Open static library";
+    }
+#endif
+
     rdpq_attach(display, NULL);
 
     ui_components_background_draw();
@@ -105,7 +126,7 @@ static void draw (menu_t *menu, surface_t *display) {
     }
 
     ui_components_actions_bar_text_draw(
-        STL_DEFAULT, ALIGN_LEFT, VALIGN_TOP, menu->home.selected == 0 ? "A: Browse files" : "Placeholder"
+        STL_DEFAULT, ALIGN_LEFT, VALIGN_TOP, action_text
     );
 
     rdpq_detach_show();

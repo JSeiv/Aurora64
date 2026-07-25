@@ -10,6 +10,7 @@ OUTPUT_DIR = output
 
 MENU_VERSION ?= "Preview release"
 AURORA64_HOME ?= 0
+AURORA64_LAUNCH_PROOF ?= 0
 BUILD_TIMESTAMP = "$(shell TZ='UTC' date "+%Y-%m-%d %H:%M:%S %:z")"
 
 include $(N64_INST)/include/n64.mk
@@ -21,6 +22,7 @@ N64_ROM_REGION = E
 
 N64_CFLAGS += -iquote $(SOURCE_DIR) -iquote $(ASSETS_DIR) -I $(SOURCE_DIR)/libs -isystem $(SOURCE_DIR)/libs/miniz -flto=auto $(FLAGS)
 N64_CFLAGS += -DFEATURE_AURORA_HOME_ENABLED=$(AURORA64_HOME)
+N64_CFLAGS += -DFEATURE_AURORA_LAUNCH_PROOF_ENABLED=$(AURORA64_LAUNCH_PROOF)
 
 SRCS = \
 	main.c \
@@ -73,6 +75,7 @@ SRCS = \
 	menu/views/file_info.c \
 	menu/views/history_favorites.c \
 	menu/views/home.c \
+	menu/views/static_library.c \
 	menu/views/image_viewer.c \
 	menu/views/text_viewer.c \
 	menu/views/load_disk.c \
