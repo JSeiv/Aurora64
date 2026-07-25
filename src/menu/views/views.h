@@ -34,6 +34,21 @@ void view_startup_init(menu_t *menu);
 void view_startup_display(menu_t *menu, surface_t *display);
 
 /**
+ * @brief Initialize the home view.
+ *
+ * @param menu Pointer to the menu structure.
+ */
+void view_home_init(menu_t *menu);
+
+/**
+ * @brief Display the home view.
+ *
+ * @param menu Pointer to the menu structure.
+ * @param display Pointer to the display surface.
+ */
+void view_home_display(menu_t *menu, surface_t *display);
+
+/**
  * @brief Initialize the browser view.
  *
  * @param menu Pointer to the menu structure.

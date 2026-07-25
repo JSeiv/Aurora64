@@ -180,6 +180,7 @@ typedef const struct {
 
 static view_t menu_views[] = {
     { MENU_MODE_STARTUP, view_startup_init, view_startup_display },
+    { MENU_MODE_HOME, view_home_init, view_home_display },
     { MENU_MODE_BROWSER, view_browser_init, view_browser_display },
     { MENU_MODE_FILE_INFO, view_file_info_init, view_file_info_display },
     { MENU_MODE_SYSTEM_INFO, view_system_info_init, view_system_info_display },

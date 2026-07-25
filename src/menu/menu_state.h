@@ -25,6 +25,7 @@
 typedef enum {
     MENU_MODE_NONE,
     MENU_MODE_STARTUP,
+    MENU_MODE_HOME,
     MENU_MODE_BROWSER,
     MENU_MODE_FILE_INFO,
     MENU_MODE_SYSTEM_INFO,
@@ -115,6 +116,14 @@ typedef struct {
         bool settings;
         bool lz_context;
     } actions;
+
+    struct {
+        int32_t selected;
+    } home;
+
+    struct {
+        menu_mode_t return_mode;
+    } credits;
 
     struct {
         bool valid;
