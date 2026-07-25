@@ -11,7 +11,7 @@
  * @brief Common tab labels used for the main menu.
  */
 static const char *tabs[] = {
-    "Files",
+    "Aurora64",
     "History",
     "Favorites",
     NULL
