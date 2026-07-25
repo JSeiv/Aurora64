@@ -155,7 +155,7 @@ The browser state is intentionally persistent across view changes (`src/menu/men
 5. loading external/global metadata;
 6. loading embedded metadata when appropriate.
 
-This inspection pipeline should be reused rather than reimplemented for launch. A future scanner must inspect one ROM at a time, zero-initialize its temporary `rom_info_t`, copy only a bounded summary into the library, and call `rom_info_free_meta()` immediately. Every successful inspection owns heap-allocated metadata strings, including defaults, and retaining full `rom_info_t` objects would leak or consume excessive memory. The raw 20-byte ROM title must never be treated as a NUL-terminated string.
+This inspection pipeline should be reused rather than reimplemented for Details and launch. It should **not** be called as the baseline background scanner merely one ROM at a time: it synchronously probes configuration, ZIP/INI metadata, and embedded metadata, and its metadata payload allocations are not bounded for a cooperative 4 MiB scan. A future scanner needs a separate bounded header/fingerprint reader with hard byte/time/depth limits and cancellation points. Metadata enrichment should be on demand, or should follow only after strict file, compressed/uncompressed payload, string, and allocation limits exist. Any `rom_info_t` created for Details/launch must still be zero-initialized and released with `rom_info_free_meta()`; the raw 20-byte ROM title must never be treated as a NUL-terminated string.
 
 ### Clean titles
 
@@ -190,6 +190,8 @@ The compatibility precedence in V0.3.2 is exact and somewhat irregular:
 A malformed sibling INI can therefore suppress global fallback, while an external source with an empty name can still be replaced by embedded metadata behavior.
 
 The current implementation has duplicated parsing and path-resolution logic. Global metadata also hardcodes `sd:/` in one path rather than consistently using `storage_prefix`. Aurora64 should eventually introduce one metadata resolver, but should first preserve compatibility with existing layouts.
+
+The audited V0.3.2 parser reads section `[meta]` and hyphenated serialized keys such as `release-date`, `osi-license`, `age-rating`, and `short-desc`. The shared `n64-tools/n64-flashcart-menu-metadata` repository at audited revision `1f278e49` uses `[metadata]` and underscore keys instead. Folder/artwork paths remain compatible, but metadata serialization does not. Aurora's resolver therefore needs fixtures for both dialects rather than assuming that current shared INIs are parsed unchanged.
 
 ### Artwork
 
@@ -353,9 +355,11 @@ Before artwork or recursive scanning is accepted, define measurable initial gate
 
 Build-time assets are converted by libdragon rules in `Makefile:90-147` and packed into DragonFS. Runtime box art and backgrounds are external SD-card PNGs and use a separate decode/cache pipeline. These two asset paths should remain distinct.
 
-## 12. Recommended Aurora64 seam
+## 12. Historical recommended Aurora64 seam
 
-### Phase 1: additive navigation shell
+This section records the pre-implementation milestone sequence from the original audit. Its labels are historical and are superseded by `docs/plans/aurora64-product-roadmap.md`: the additive Home work and source-independent owned-path Details seam were completed across actual Phases 1 and 2, and current Phase 3 is the real-library/index foundation.
+
+### Historical milestone A: additive navigation shell
 
 Add a new independent mode/view while retaining the stock browser:
 
@@ -365,13 +369,13 @@ Add a new independent mode/view while retaining the stock browser:
 4. Add the source file to `SRCS` in `Makefile`.
 5. Change only the normal startup branch from Browser to Home.
 6. Provide `Browse Files` and a deliberate Browser-to-Home return path; route first-run Credits to Home.
-7. Use an explicitly bounded source such as existing History/Favorites or a fixed development fixture for the first selectable tiles. Recursive library discovery and artwork are not Phase 1 dependencies.
+7. Use an explicitly bounded source such as existing History/Favorites or a fixed development fixture for the first selectable tiles. Recursive library discovery and artwork are not shell-milestone dependencies.
 8. Harden `browser.select_file` with exact ROM-type validation and explicit cloned-path ownership before using it for selection.
 9. Require each Home-owned allocation to be released on every outgoing transition, including errors and chained transitions; the dispatcher has no global view `deinit` callback.
 
 This preserves fault handling, first-run credits, autoload, browser fallback, detailed ROM inspection, save handling, and the SC64 boot pipeline.
 
-### Phase 2: library model
+### Historical milestone B: library model
 
 Introduce a separate library module with:
 
@@ -386,9 +390,9 @@ Introduce a separate library module with:
 
 Define the stable identity algorithm, collision handling, schema version, and migration behavior before relying on identity across moves. Persist the index recoverably with a temporary file, validation/versioning, atomic replacement where supported, and a corruption fallback. Do not repeat the non-atomic whole-file history design.
 
-Scan one ROM at a time, copy only bounded summary fields, free temporary metadata immediately, and enforce metadata limits before scanning untrusted sidecars. Do not inflate transient `entry_t` or retain full `rom_info_t` objects as the library model. Browser and library have different ownership, lifetime, and identity requirements.
+Use a bounded header/fingerprint scanner with hard work/allocation limits, copy only bounded summary fields, and keep untrusted sidecar parsing out of the baseline scan until its payload limits and failure behavior are explicit. Do not inflate transient `entry_t`, call the full synchronous `rom_config_load()` scanner-wide, or retain full `rom_info_t` objects as the library model. Browser and library have different ownership, lifetime, and identity requirements.
 
-### Phase 3: direct launch seam
+### Historical milestone C: source-independent Details/launch seam
 
 After the home view is proven, add source-independent launch state:
 
@@ -411,9 +415,9 @@ Changes should not bypass or casually modify:
 7. Stock Browser as the safe fallback until the shelf is independently reliable.
 8. The launch window after ROM/save staging begins: do not start library persistence, artwork decoding, scanning, or other asynchronous work before boot handoff completes.
 
-## 14. Required regression gates before direct launch
+## 14. Historical regression recommendations for the direct launch seam
 
-Before Phase 3 is accepted on hardware, verify:
+Before the source-independent direct launch seam is accepted on hardware, verify:
 
 - no-save ROMs and every supported save type;
 - creation of missing saves and `0xFF` initialization;
