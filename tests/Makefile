@@ -9,7 +9,8 @@ BUILD_DIR := build
 TEST_BINARY ?= $(BUILD_DIR)/tests
 SANITIZE_BUILD_DIR := $(BUILD_DIR)/sanitize
 SANITIZE_TEST_BINARY := $(SANITIZE_BUILD_DIR)/tests
-SOURCES := test_main.c support/test_alloc.c
+SOURCES := test_main.c test_rom_header.c support/test_alloc.c \
+	support/rom_fixture_builder.c ../src/menu/library/rom_header.c
 
 .PHONY: test test-sanitize clean force-test-build
 
@@ -18,7 +19,7 @@ test: $(TEST_BINARY)
 
 $(TEST_BINARY): force-test-build $(SOURCES) support/test_alloc.h ../src/libs/acutest/acutest.h
 	@mkdir -p $(@D)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I../src/libs/acutest -I. $(SOURCES) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I../src -I../src/libs/acutest -I. $(SOURCES) $(LDFLAGS) -o $@
 
 test-sanitize:
 	rm -rf $(SANITIZE_BUILD_DIR)

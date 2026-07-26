@@ -14,45 +14,12 @@
 #include "ini_parser.h"
 
 #include "boot/cic.h"
+#include "library/rom_header.h"
 #include "rom_info.h"
 #include "utils/fs.h"
 
 
-#define SWAP_VARS(x0, x1)       { typeof(x0) tmp = (x0); (x0) = (x1); (x1) = (tmp); }
-
-#define PI_CONFIG_BIG_ENDIAN    (0x80371240)
-#define PI_CONFIG_LITTLE_ENDIAN (0x40123780)
-#define PI_CONFIG_BYTE_SWAPPED  (0x37804012)
-#define PI_CONFIG_64DD_IPL      (0x80270740)
-
 #define CLOCK_RATE_DEFAULT      (0x0000000F)
-
-
-/** @brief ROM File Information Structure. */
-typedef struct  __attribute__((packed)) {
-    uint32_t pi_dom1_config;
-    uint32_t clock_rate;
-    uint32_t boot_address;
-    struct {
-        uint8_t __unused_1[2];
-        uint8_t version;
-        char revision;
-    } libultra;
-    uint64_t check_code;
-    uint8_t __unused_1[8];
-    char title[20];
-    uint8_t __unused_2[7];
-    union {
-        char game_code[4];
-        struct {
-            char category_code;
-            char unique_code[2];
-            char destination_code;
-        };
-    };
-    uint8_t version;
-    uint8_t ipl3[IPL3_LENGTH];
-} rom_header_t;
 
 /** @brief ROM Information Match Type Enumeration. */
 typedef enum {
@@ -575,31 +542,6 @@ static const match_t database[] = {
 // clang-format on
 
 
-static void fix_rom_header_endianness (rom_header_t *rom_header, rom_info_t *rom_info) {
-    uint8_t *raw = (uint8_t *) (rom_header);
-
-    switch (rom_header->pi_dom1_config) {
-        case PI_CONFIG_LITTLE_ENDIAN:
-            rom_info->endianness = ENDIANNESS_LITTLE;
-            for (int i = 0; i < sizeof(rom_header_t); i += 4) {
-                SWAP_VARS(raw[i + 0], raw[i + 3]);
-                SWAP_VARS(raw[i + 1], raw[i + 2]);
-            }
-            break;
-
-        case PI_CONFIG_BYTE_SWAPPED:
-            rom_info->endianness = ENDIANNESS_BYTE_SWAP;
-            for (int i = 0; i < sizeof(rom_header_t); i += 2) {
-                SWAP_VARS(raw[i + 0], raw[i + 1]);
-            }
-            break;
-
-        default:
-            rom_info->endianness = ENDIANNESS_BIG;
-            break;
-    }
-}
-
 static bool compare_id (const match_t *match, rom_header_t *rom_header) {
     int characters_to_check = (match->type == MATCH_TYPE_ID) ? 3 : 4;
 
@@ -610,7 +552,7 @@ static bool compare_id (const match_t *match, rom_header_t *rom_header) {
     }
 
     if (match->type == MATCH_TYPE_ID_REGION_VERSION) {
-        if (match->fields.version != rom_header->version) {
+        if (match->fields.version != rom_header->revision) {
             return false;
         }
     }
@@ -638,7 +580,7 @@ static match_t find_rom_in_database (rom_header_t *rom_header) {
                 break;
 
             case MATCH_TYPE_HOMEBREW_HEADER:
-                if (strncmp(match->fields.id, rom_header->unique_code, sizeof(rom_header->unique_code)) == 0) {
+                if (strncmp(match->fields.id, rom_header->cartridge_id, 2U) == 0) {
                     return *match;
                 }
                 break;
@@ -712,14 +654,16 @@ static rom_tv_type_t determine_tv_type (rom_destination_type_t rom_destination_c
         }
 }
 
-static void extract_rom_info (match_t *match, rom_header_t *rom_header, rom_info_t *rom_info) {
-    rom_info->cic_type = detect_cic_type(rom_header->ipl3);
+static void extract_rom_info (match_t *match, rom_header_t *rom_header,
+                              uint8_t canonical[ROM_HEADER_WITH_IPL3_BYTES],
+                              rom_info_t *rom_info) {
+    rom_info->cic_type = detect_cic_type(canonical + ROM_HEADER_METADATA_BYTES);
 
     if (match->type == MATCH_TYPE_HOMEBREW_HEADER) {
-        if (rom_header->version & (1 << 0)) {
+        if (rom_header->revision & (1 << 0)) {
             match->data.feat |= FEAT_RTC;
         }
-        switch ((rom_header->version & 0xF0) >> 4) {
+        switch ((rom_header->revision & 0xF0) >> 4) {
             case 0: match->data.save = SAVE_TYPE_NONE; break;
             case 1: match->data.save = SAVE_TYPE_EEPROM_4KBIT; break;
             case 2: match->data.save = SAVE_TYPE_EEPROM_16KBIT; break;
@@ -733,12 +677,12 @@ static void extract_rom_info (match_t *match, rom_header_t *rom_header, rom_info
 
     rom_info->clock_rate = (rom_header->clock_rate == CLOCK_RATE_DEFAULT) ? 62.5f : (rom_header->clock_rate & ~(CLOCK_RATE_DEFAULT)) / 1000000.0f;
     rom_info->boot_address = fix_boot_address(rom_info->cic_type, rom_header->boot_address);
-    rom_info->libultra.version = rom_header->libultra.version;
-    rom_info->libultra.revision = rom_header->libultra.revision;
+    rom_info->libultra.version = canonical[0x0E];
+    rom_info->libultra.revision = (char)canonical[0x0F];
     rom_info->check_code = rom_header->check_code;
     memcpy(rom_info->title, rom_header->title, sizeof(rom_info->title));
     memcpy(rom_info->game_code, rom_header->game_code, sizeof(rom_info->game_code));
-    rom_info->version = rom_header->version;
+    rom_info->version = rom_header->revision;
 
     rom_info->save_type = match->data.save;
     rom_info->tv_type = determine_tv_type(rom_info->destination_code);
@@ -891,12 +835,13 @@ static bool load_metadata_from_zip_file (const char *zip_path, rom_info_t *rom_i
  * @param rom_info Output: metadata loaded into rom_info->meta
  * @return true if embedded metadata was found and loaded, false otherwise
  */
-static bool load_rom_meta_from_embedded_zip (const char *rom_path, rom_header_t *rom_header, rom_info_t *rom_info) {
+static bool load_rom_meta_from_embedded_zip (const char *rom_path,
+                                              const uint8_t *canonical,
+                                              rom_info_t *rom_info) {
     debugf("[META] load_rom_meta_from_embedded_zip: path='%s'\n", rom_path);
     
     // Check if ROM has embedded metadata flag (byte 0x38 bit 0)
-    uint8_t *raw = (uint8_t *)rom_header;
-    uint8_t flag_byte = raw[0x38];
+    uint8_t flag_byte = canonical[0x38];
     debugf("[META] load_rom_meta_from_embedded_zip: header[0x38]=0x%02x, flag=%d\n", flag_byte, (flag_byte & 1));
     
     if ((flag_byte & 1) == 0) {
@@ -1261,6 +1206,7 @@ rom_err_t rom_config_setting_set_patches (path_t *path, rom_info_t *rom_info, bo
 
 rom_err_t rom_config_load (path_t *path, rom_info_t *rom_info) {
     FILE *f;
+    uint8_t canonical[ROM_HEADER_WITH_IPL3_BYTES];
     rom_header_t rom_header;
     
     debugf("[META] rom_config_load: starting for '%s'\\n", path_get(path));
@@ -1269,7 +1215,7 @@ rom_err_t rom_config_load (path_t *path, rom_info_t *rom_info) {
         return ROM_ERR_NO_FILE;
     }
     setbuf(f, NULL);
-    if (fread(&rom_header, sizeof(rom_header), 1, f) != 1) {
+    if (fread(canonical, sizeof(canonical), 1, f) != 1) {
         fclose(f);
         return ROM_ERR_LOAD_IO;
     }
@@ -1277,11 +1223,28 @@ rom_err_t rom_config_load (path_t *path, rom_info_t *rom_info) {
         return ROM_ERR_LOAD_IO;
     }
 
-    fix_rom_header_endianness(&rom_header, rom_info);
+    if (!rom_header_parse(canonical, sizeof(canonical), &rom_header) ||
+        !rom_normalize_prefix(rom_header.byte_order, canonical,
+                              sizeof(canonical), canonical,
+                              sizeof(canonical))) {
+        return ROM_ERR_LOAD_IO;
+    }
+    switch (rom_header.byte_order) {
+        case ROM_BYTE_ORDER_V64:
+            rom_info->endianness = ENDIANNESS_BYTE_SWAP;
+            break;
+        case ROM_BYTE_ORDER_N64:
+            rom_info->endianness = ENDIANNESS_LITTLE;
+            break;
+        case ROM_BYTE_ORDER_Z64:
+        default:
+            rom_info->endianness = ENDIANNESS_BIG;
+            break;
+    }
 
     match_t match = find_rom_in_database(&rom_header);
 
-    extract_rom_info(&match, &rom_header, rom_info);
+    extract_rom_info(&match, &rom_header, canonical, rom_info);
     debugf("[META] rom_config_load: game_code='%c%c%c%c', CIC type=%d\\n", 
            rom_info->game_code[0], rom_info->game_code[1], rom_info->game_code[2], rom_info->game_code[3],
            rom_info->cic_type);
@@ -1295,7 +1258,7 @@ rom_err_t rom_config_load (path_t *path, rom_info_t *rom_info) {
     // If external .meta load found nothing (name is still empty), try embedded metadata
     if (rom_info->meta.name && strlen(rom_info->meta.name) == 0) {
         debugf("[META] rom_config_load: name is empty, trying embedded metadata\\n");
-        load_rom_meta_from_embedded_zip(path_get(path), &rom_header, rom_info);
+        load_rom_meta_from_embedded_zip(path_get(path), canonical, rom_info);
         debugf("[META] rom_config_load: after load_rom_meta_from_embedded_zip, name='%s'\\n", rom_info->meta.name);
     } else {
         debugf("[META] rom_config_load: external metadata found, skipping embedded\\n");

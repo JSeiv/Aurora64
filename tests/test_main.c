@@ -12,6 +12,15 @@
 #include <stddef.h>
 #include <string.h>
 
+void test_rom_header_orders_and_fields(void);
+void test_rom_header_regions_and_fallback_boundary(void);
+void test_rom_header_bounds_invalid_and_zeroing(void);
+void test_rom_header_64dd_ipl_compatibility(void);
+void test_rom_header_prefix_normalization(void);
+void test_rom_header_streaming_boundaries(void);
+void test_rom_header_streaming_capacity(void);
+void test_rom_header_streaming_fail_closed(void);
+
 static void test_smoke(void)
 {
     TEST_CHECK(1);
@@ -90,5 +99,13 @@ TEST_LIST = {
     { "allocator/reset", test_reset_restores_allocation },
     { "allocator/calloc", test_calloc_zero_initializes_memory },
     { "allocator/realloc-failure", test_realloc_failure_preserves_original_allocation },
+    { "rom-header/orders-and-fields", test_rom_header_orders_and_fields },
+    { "rom-header/regions-and-fallback", test_rom_header_regions_and_fallback_boundary },
+    { "rom-header/bounds-invalid-zeroing", test_rom_header_bounds_invalid_and_zeroing },
+    { "rom-header/64dd-ipl-compatibility", test_rom_header_64dd_ipl_compatibility },
+    { "rom-header/prefix-normalization", test_rom_header_prefix_normalization },
+    { "rom-header/streaming-boundaries", test_rom_header_streaming_boundaries },
+    { "rom-header/streaming-capacity", test_rom_header_streaming_capacity },
+    { "rom-header/streaming-fail-closed", test_rom_header_streaming_fail_closed },
     { NULL, NULL }
 };
