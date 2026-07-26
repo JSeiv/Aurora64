@@ -15,6 +15,12 @@
 
 # Ignore external development tools
 /tools/*
+!/tools/phase3_discovery/
+!/tools/phase3_discovery/main.c
+!/tools/phase3_discovery/README.md
+!/tools/phase3_discovery/Makefile
+/tools/phase3_discovery/build/
+/tools/phase3_discovery/*.z64
 
 # Ignore any N64 ROM
 **/*.n64
