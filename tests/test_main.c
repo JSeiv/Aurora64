@@ -20,6 +20,14 @@ void test_rom_header_prefix_normalization(void);
 void test_rom_header_streaming_boundaries(void);
 void test_rom_header_streaming_capacity(void);
 void test_rom_header_streaming_fail_closed(void);
+void test_sha256_published_vectors(void);
+void test_sha256_incremental_chunking(void);
+void test_sha256_misuse_and_overflow(void);
+void test_rom_identity_orders_oracle_and_chunks(void);
+void test_rom_identity_names_mutation_and_exactly_once(void);
+void test_rom_identity_malformed_tail(void);
+void test_rom_identity_invalid_and_lifecycle(void);
+void test_rom_fingerprint_equality_policy(void);
 
 static void test_smoke(void)
 {
@@ -107,5 +115,13 @@ TEST_LIST = {
     { "rom-header/streaming-boundaries", test_rom_header_streaming_boundaries },
     { "rom-header/streaming-capacity", test_rom_header_streaming_capacity },
     { "rom-header/streaming-fail-closed", test_rom_header_streaming_fail_closed },
+    { "sha256/published-vectors", test_sha256_published_vectors },
+    { "sha256/incremental-chunking", test_sha256_incremental_chunking },
+    { "sha256/misuse-overflow", test_sha256_misuse_and_overflow },
+    { "rom-identity/orders-oracle-chunks", test_rom_identity_orders_oracle_and_chunks },
+    { "rom-identity/names-mutation-exactly-once", test_rom_identity_names_mutation_and_exactly_once },
+    { "rom-identity/malformed-tail", test_rom_identity_malformed_tail },
+    { "rom-identity/invalid-lifecycle", test_rom_identity_invalid_and_lifecycle },
+    { "rom-identity/equality-policy", test_rom_fingerprint_equality_policy },
     { NULL, NULL }
 };

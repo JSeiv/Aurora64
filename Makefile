@@ -66,6 +66,8 @@ SRCS = \
 	menu/png_decoder.c \
 	menu/rom_info.c \
 	menu/library/rom_header.c \
+	menu/library/sha256.c \
+	menu/library/rom_identity.c \
 	menu/settings.c \
 	menu/sound.c \
 	menu/ui_components/background.c \

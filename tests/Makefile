@@ -9,8 +9,10 @@ BUILD_DIR := build
 TEST_BINARY ?= $(BUILD_DIR)/tests
 SANITIZE_BUILD_DIR := $(BUILD_DIR)/sanitize
 SANITIZE_TEST_BINARY := $(SANITIZE_BUILD_DIR)/tests
-SOURCES := test_main.c test_rom_header.c support/test_alloc.c \
-	support/rom_fixture_builder.c ../src/menu/library/rom_header.c
+SOURCES := test_main.c test_rom_header.c test_sha256.c test_rom_identity.c \
+	support/test_alloc.c support/rom_fixture_builder.c \
+	../src/menu/library/rom_header.c ../src/menu/library/sha256.c \
+	../src/menu/library/rom_identity.c
 
 .PHONY: test test-sanitize clean force-test-build
 
