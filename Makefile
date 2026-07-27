@@ -68,6 +68,8 @@ SRCS = \
 	menu/library/rom_header.c \
 	menu/library/sha256.c \
 	menu/library/rom_identity.c \
+	menu/library/library_roots.c \
+	menu/library/library_fs_libdragon.c \
 	menu/settings.c \
 	menu/sound.c \
 	menu/ui_components/background.c \

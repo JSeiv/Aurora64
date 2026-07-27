@@ -2,6 +2,7 @@ CC ?= cc
 STRICT_CFLAGS := -std=c11 -Wall -Wextra -Werror -pedantic
 override CFLAGS := $(filter-out $(STRICT_CFLAGS),$(CFLAGS)) $(STRICT_CFLAGS)
 CPPFLAGS ?=
+override CPPFLAGS += -DLIBRARY_FS_HOST_TEST
 LDFLAGS ?=
 SANITIZE_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer
 
@@ -10,9 +11,11 @@ TEST_BINARY ?= $(BUILD_DIR)/tests
 SANITIZE_BUILD_DIR := $(BUILD_DIR)/sanitize
 SANITIZE_TEST_BINARY := $(SANITIZE_BUILD_DIR)/tests
 SOURCES := test_main.c test_rom_header.c test_sha256.c test_rom_identity.c \
+	test_library_roots.c test_library_fs_libdragon.c support/fake_library_fs.c \
 	support/test_alloc.c support/rom_fixture_builder.c \
 	../src/menu/library/rom_header.c ../src/menu/library/sha256.c \
-	../src/menu/library/rom_identity.c
+	../src/menu/library/rom_identity.c ../src/menu/library/library_roots.c \
+	../src/menu/library/library_fs_libdragon.c
 
 .PHONY: test test-sanitize clean force-test-build
 
@@ -21,7 +24,7 @@ test: $(TEST_BINARY)
 
 $(TEST_BINARY): force-test-build $(SOURCES) support/test_alloc.h ../src/libs/acutest/acutest.h
 	@mkdir -p $(@D)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I../src -I../src/libs/acutest -I. $(SOURCES) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I../src -I../src/libs/acutest -I../libdragon/include -I. $(SOURCES) $(LDFLAGS) -o $@
 
 test-sanitize:
 	rm -rf $(SANITIZE_BUILD_DIR)

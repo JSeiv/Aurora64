@@ -28,6 +28,26 @@ void test_rom_identity_names_mutation_and_exactly_once(void);
 void test_rom_identity_malformed_tail(void);
 void test_rom_identity_invalid_and_lifecycle(void);
 void test_rom_fingerprint_equality_policy(void);
+void test_library_roots_normalization(void);
+void test_library_roots_bounds_and_atomicity(void);
+void test_library_roots_reduction_and_limits(void);
+void test_library_roots_deterministic_zeroed_output(void);
+void test_library_roots_default(void);
+void test_library_exclusions(void);
+void test_fake_library_fs_directory_lifecycle(void);
+void test_fake_library_fs_errors_and_balance(void);
+void test_fake_library_fs_file_stat_ticks_and_ownership(void);
+void test_fake_library_fs_two_instance_handle_provenance(void);
+void test_fake_library_fs_pool_stale_ownership_and_bounds(void);
+void test_libdragon_adapter_paths_outputs_and_errors(void);
+void test_libdragon_adapter_lifecycle_pool_and_stale_tokens(void);
+void test_libdragon_adapter_next_errors_cleanup_and_deinit(void);
+void test_libdragon_adapter_close_failure_retries(void);
+void test_libdragon_adapter_open_rollback_quarantines_close_failure(void);
+void test_libdragon_adapter_init_bounds_and_zeroing(void);
+void test_libdragon_adapter_two_instance_handle_provenance(void);
+void test_libdragon_adapter_files_stat_cross_tokens_and_pool(void);
+void test_libdragon_adapter_token_exhaustion_preflight(void);
 
 static void test_smoke(void)
 {
@@ -123,5 +143,25 @@ TEST_LIST = {
     { "rom-identity/malformed-tail", test_rom_identity_malformed_tail },
     { "rom-identity/invalid-lifecycle", test_rom_identity_invalid_and_lifecycle },
     { "rom-identity/equality-policy", test_rom_fingerprint_equality_policy },
+    { "library-roots/normalization", test_library_roots_normalization },
+    { "library-roots/bounds-atomicity", test_library_roots_bounds_and_atomicity },
+    { "library-roots/reduction-limits", test_library_roots_reduction_and_limits },
+    { "library-roots/deterministic-zeroed-output", test_library_roots_deterministic_zeroed_output },
+    { "library-roots/default", test_library_roots_default },
+    { "library-roots/exclusions", test_library_exclusions },
+    { "library-fs/directory-lifecycle", test_fake_library_fs_directory_lifecycle },
+    { "library-fs/errors-balance", test_fake_library_fs_errors_and_balance },
+    { "library-fs/file-stat-ticks", test_fake_library_fs_file_stat_ticks_and_ownership },
+    { "library-fs/fake-two-instance-provenance", test_fake_library_fs_two_instance_handle_provenance },
+    { "library-fs/fake-pool-stale-ownership-bounds", test_fake_library_fs_pool_stale_ownership_and_bounds },
+    { "library-fs/libdragon-paths-outputs-errors", test_libdragon_adapter_paths_outputs_and_errors },
+    { "library-fs/libdragon-pool-stale", test_libdragon_adapter_lifecycle_pool_and_stale_tokens },
+    { "library-fs/libdragon-cleanup-deinit", test_libdragon_adapter_next_errors_cleanup_and_deinit },
+    { "library-fs/libdragon-close-failure-retries", test_libdragon_adapter_close_failure_retries },
+    { "library-fs/libdragon-open-rollback-quarantine", test_libdragon_adapter_open_rollback_quarantines_close_failure },
+    { "library-fs/libdragon-init-bounds", test_libdragon_adapter_init_bounds_and_zeroing },
+    { "library-fs/libdragon-two-instance-provenance", test_libdragon_adapter_two_instance_handle_provenance },
+    { "library-fs/libdragon-files-stat-cross-pool", test_libdragon_adapter_files_stat_cross_tokens_and_pool },
+    { "library-fs/libdragon-token-exhaustion-preflight", test_libdragon_adapter_token_exhaustion_preflight },
     { NULL, NULL }
 };
