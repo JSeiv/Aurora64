@@ -21,6 +21,14 @@
 !/tools/phase3_discovery/Makefile
 /tools/phase3_discovery/build/
 /tools/phase3_discovery/*.z64
+!/tools/phase3_task5_fs_smoke/
+!/tools/phase3_task5_fs_smoke/main.c
+!/tools/phase3_task5_fs_smoke/fs_adapter.c
+!/tools/phase3_task5_fs_smoke/roots.c
+!/tools/phase3_task5_fs_smoke/README.md
+!/tools/phase3_task5_fs_smoke/Makefile
+/tools/phase3_task5_fs_smoke/build/
+/tools/phase3_task5_fs_smoke/*.z64
 
 # Ignore any N64 ROM
 **/*.n64
