@@ -59,6 +59,15 @@ void test_library_scanner_invalid_header_close_retry(void);
 void test_library_scanner_destroy_retries_directory_close(void);
 void test_library_scanner_tick_expiry_stops_reads(void);
 void test_library_scanner_directory_capacity_classes(void);
+void test_library_scanner_512_compatible_sources(void);
+void test_library_snapshot_atomic_generations(void);
+void test_library_snapshot_collapse_order_lookup(void);
+void test_library_snapshot_conflict_and_status(void);
+void test_library_snapshot_status_immutability_and_failure(void);
+void test_library_snapshot_selection_reconciliation(void);
+void test_library_snapshot_capacity_poison_and_cancel(void);
+void test_library_snapshot_oom_retains_publication(void);
+void test_library_snapshot_heap_accounting(void);
 
 static void test_smoke(void)
 {
@@ -185,5 +194,14 @@ TEST_LIST = {
     { "library-scanner/destroy-directory-close-retry", test_library_scanner_destroy_retries_directory_close },
     { "library-scanner/tick-expiry-stops-reads", test_library_scanner_tick_expiry_stops_reads },
     { "library-scanner/directory-capacity-classes", test_library_scanner_directory_capacity_classes },
+    { "library-scanner/512-compatible-sources", test_library_scanner_512_compatible_sources },
+    { "library-snapshot/atomic-generations", test_library_snapshot_atomic_generations },
+    { "library-snapshot/collapse-order-lookup", test_library_snapshot_collapse_order_lookup },
+    { "library-snapshot/conflict-status", test_library_snapshot_conflict_and_status },
+    { "library-snapshot/status-immutability-failure", test_library_snapshot_status_immutability_and_failure },
+    { "library-snapshot/selection-reconciliation", test_library_snapshot_selection_reconciliation },
+    { "library-snapshot/capacity-poison-cancel", test_library_snapshot_capacity_poison_and_cancel },
+    { "library-snapshot/oom-retains-publication", test_library_snapshot_oom_retains_publication },
+    { "library-snapshot/heap-accounting", test_library_snapshot_heap_accounting },
     { NULL, NULL }
 };

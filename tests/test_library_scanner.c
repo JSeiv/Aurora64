@@ -2,6 +2,7 @@
 #include "acutest.h"
 
 #include "menu/library/library_scanner.h"
+#include "menu/library/library_snapshot.h"
 #include "support/fake_library_fs.h"
 #include "support/rom_fixture_builder.h"
 
@@ -582,7 +583,8 @@ typedef enum {
     GENERATED_DEPTH,
     GENERATED_QUEUE,
     GENERATED_ARENA,
-    GENERATED_RECORD
+    GENERATED_RECORD_UNIQUE,
+    GENERATED_SOURCES
 } generated_mode_t;
 
 typedef struct {
@@ -591,6 +593,7 @@ typedef struct {
     size_t count;
     size_t offset;
     size_t file_offset;
+    size_t file_index;
     bool active;
     uint8_t rom[ROM_HEADER_WITH_IPL3_BYTES];
 } generated_fs_t;
@@ -601,7 +604,7 @@ static void generated_entry(generated_fs_t *fs, size_t index,
     size_t name_length;
     memset(out, 0, sizeof(*out));
     out->type = LIBRARY_FS_ENTRY_DIRECTORY;
-    if (fs->mode == GENERATED_RECORD) {
+    if (fs->mode == GENERATED_RECORD_UNIQUE || fs->mode == GENERATED_SOURCES) {
         out->type = LIBRARY_FS_ENTRY_FILE;
         out->size = sizeof(fs->rom);
         (void)snprintf(out->basename, sizeof(out->basename), "r%03lu.z64",
@@ -627,7 +630,8 @@ static int generated_dir_open(void *context, const char *path, void **handle,
     size_t count = 0U;
     for (at = path; *at != '\0'; ++at) if (*at == '/') ++slash_count;
     if (fs->mode == GENERATED_TOP && strcmp(path, "/") == 0) count = 33U;
-    if (fs->mode == GENERATED_RECORD && strcmp(path, "/") == 0) count = 257U;
+    if (fs->mode == GENERATED_RECORD_UNIQUE && strcmp(path, "/") == 0) count = 257U;
+    if (fs->mode == GENERATED_SOURCES && strcmp(path, "/") == 0) count = 512U;
     if (fs->mode == GENERATED_DEPTH && slash_count <= 9U) count = 1U;
     if ((fs->mode == GENERATED_QUEUE || fs->mode == GENERATED_ARENA) &&
         strcmp(path, "/") == 0) count = 1U;
@@ -670,7 +674,9 @@ static int generated_dir_close(void *context, void *handle)
 static int generated_file_open(void *context, const char *path, void **handle)
 {
     generated_fs_t *fs = context;
-    (void)path;
+    unsigned long parsed = 0U;
+    (void)sscanf(path, "/r%lu.z64", &parsed);
+    fs->file_index = (size_t)parsed;
     fs->file_offset = 0U;
     *handle = &fs->file_offset;
     return LIBRARY_FS_ENTRY;
@@ -684,6 +690,14 @@ static int64_t generated_file_read(void *context, void *handle, void *data,
     size_t amount = length < remaining ? length : remaining;
     (void)handle;
     memcpy(data, fs->rom + fs->file_offset, amount);
+    if (fs->mode == GENERATED_RECORD_UNIQUE) {
+        size_t first = fs->file_offset;
+        size_t end = first + amount;
+        if (first <= 200U && 200U < end)
+            ((uint8_t *)data)[200U - first] ^= (uint8_t)fs->file_index;
+        if (first <= 201U && 201U < end)
+            ((uint8_t *)data)[201U - first] ^= (uint8_t)(fs->file_index >> 8U);
+    }
     fs->file_offset += amount;
     return (int64_t)amount;
 }
@@ -698,7 +712,8 @@ static int generated_stat(void *context, const char *path, library_stat_t *out)
     generated_fs_t *fs = context;
     (void)path;
     memset(out, 0, sizeof(*out));
-    if (fs->mode != GENERATED_RECORD) return LIBRARY_FS_ERROR;
+    if (fs->mode != GENERATED_RECORD_UNIQUE && fs->mode != GENERATED_SOURCES)
+        return LIBRARY_FS_ERROR;
     out->type = LIBRARY_FS_ENTRY_FILE;
     out->size = sizeof(fs->rom);
     out->modified_time = 9;
@@ -723,7 +738,7 @@ static void generated_init(generated_fs_t *fs, generated_mode_t mode)
 void test_library_scanner_directory_capacity_classes(void)
 {
     generated_mode_t mode;
-    for (mode = GENERATED_TOP; mode <= GENERATED_RECORD;
+    for (mode = GENERATED_TOP; mode <= GENERATED_RECORD_UNIQUE;
          mode = (generated_mode_t)(mode + 1)) {
         generated_fs_t fs;
         library_scanner_t *scanner = NULL;
@@ -736,4 +751,34 @@ void test_library_scanner_directory_capacity_classes(void)
         TEST_CHECK(library_scanner_stats(scanner)->capacity_failures == 1U);
         library_scanner_destroy(scanner);
     }
+}
+
+void test_library_scanner_512_compatible_sources(void)
+{
+    generated_fs_t fs;
+    library_scanner_t *scanner = NULL;
+    library_snapshot_builder_t *builder = NULL;
+    library_snapshot_t *snapshot = NULL;
+    generated_init(&fs, GENERATED_SOURCES);
+    TEST_ASSERT(library_scanner_create(&scanner, &fs.interface,
+                                       library_roots_default(), NULL));
+    TEST_ASSERT(library_scanner_start(scanner));
+    poll_to_terminal(scanner, 1024U, 4096U);
+    TEST_CHECK(library_scanner_state(scanner) == LIBRARY_SCANNER_COMPLETE);
+    TEST_CHECK(library_scanner_result_count(scanner) == 512U);
+    TEST_CHECK(library_scanner_stats(scanner)->clean);
+    TEST_ASSERT(library_snapshot_builder_create(&builder, NULL));
+    TEST_ASSERT(library_snapshot_builder_add_scanner(builder, scanner));
+    TEST_ASSERT(library_snapshot_builder_freeze(builder, 1U, &snapshot));
+    TEST_CHECK(library_snapshot_record_count(snapshot) == 1U);
+    TEST_CHECK(library_snapshot_source_count(snapshot) == 512U);
+    TEST_CHECK(strcmp(library_snapshot_source_path(snapshot, 0U),
+                      "/r000.z64") == 0);
+    TEST_CHECK(strcmp(library_snapshot_source_path(snapshot, 511U),
+                      "/r511.z64") == 0);
+    TEST_CHECK(library_scanner_result_at(scanner, 0U) == NULL);
+    TEST_CHECK(!library_scanner_restart(scanner));
+    library_snapshot_release(snapshot);
+    library_snapshot_builder_destroy(builder);
+    library_scanner_destroy(scanner);
 }

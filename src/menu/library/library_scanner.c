@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define LIBRARY_SCANNER_MAX_SOURCES 512U
+
 typedef struct {
     size_t path_offset;
     uint8_t depth;
@@ -31,8 +33,9 @@ struct library_scanner {
     uint8_t *read_buffer;
     uint8_t *normalize_buffer;
 
-    library_scanner_record_t records[LIBRARY_SCANNER_MAX_RECORDS];
+    library_scanner_record_t *records;
     size_t record_count;
+    size_t logical_record_count;
 
     bool current_directory_valid;
     scan_path_t current_directory;
@@ -183,7 +186,11 @@ static void reset_generation_work(library_scanner_t *scanner)
     scanner->queue_count = 0U;
     scanner->arena_used = 0U;
     scanner->record_count = 0U;
-    memset(scanner->records, 0, sizeof(scanner->records));
+    scanner->logical_record_count = 0U;
+    if (scanner->records != NULL) {
+        memset(scanner->records, 0,
+               LIBRARY_SCANNER_MAX_SOURCES * sizeof(*scanner->records));
+    }
     memset(&scanner->stats, 0, sizeof(scanner->stats));
     scanner->stats.clean = true;
     scanner->current_directory_valid = false;
@@ -443,6 +450,9 @@ bool library_scanner_create(library_scanner_t **out, library_fs_t *fs,
     scanner = selected.calloc_fn(selected.context, 1U, sizeof(*scanner));
     if (scanner == NULL) return false;
     scanner->allocator = selected;
+    scanner->records = selected.calloc_fn(selected.context,
+                                           LIBRARY_SCANNER_MAX_SOURCES,
+                                           sizeof(*scanner->records));
     scanner->queue = selected.calloc_fn(selected.context,
                                          LIBRARY_SCANNER_MAX_PATHS,
                                          sizeof(*scanner->queue));
@@ -452,8 +462,9 @@ bool library_scanner_create(library_scanner_t **out, library_fs_t *fs,
                                                LIBRARY_SCANNER_READ_BYTES);
     scanner->normalize_buffer = selected.malloc_fn(selected.context,
                                                     LIBRARY_SCANNER_READ_BYTES);
-    if (scanner->queue == NULL || scanner->arena == NULL ||
-        scanner->read_buffer == NULL || scanner->normalize_buffer == NULL) {
+    if (scanner->records == NULL || scanner->queue == NULL ||
+        scanner->arena == NULL || scanner->read_buffer == NULL ||
+        scanner->normalize_buffer == NULL) {
         library_scanner_destroy(scanner);
         return false;
     }
@@ -476,13 +487,56 @@ bool library_scanner_destroy(library_scanner_t *scanner)
     allocator.free_fn(allocator.context, scanner->read_buffer);
     allocator.free_fn(allocator.context, scanner->arena);
     allocator.free_fn(allocator.context, scanner->queue);
+    allocator.free_fn(allocator.context, scanner->records);
     allocator.free_fn(allocator.context, scanner);
+    return true;
+}
+
+bool library_scanner_snapshot_detach_internal(
+    library_scanner_t *scanner, library_scanner_record_t **records_out,
+    size_t *record_count_out, char **arena_out, size_t *arena_used_out,
+    size_t *records_allocation_out, size_t *arena_allocation_out,
+    library_allocator_t *allocator_out)
+{
+    library_allocator_t allocator;
+    if (scanner == NULL || records_out == NULL || record_count_out == NULL ||
+        arena_out == NULL || arena_used_out == NULL || records_allocation_out == NULL ||
+        arena_allocation_out == NULL || allocator_out == NULL ||
+        scanner->state != LIBRARY_SCANNER_COMPLETE || !scanner->stats.clean ||
+        scanner->records == NULL || scanner->arena == NULL ||
+        scanner->file_handle != NULL || scanner->directory_handle != NULL) {
+        return false;
+    }
+    allocator = scanner->allocator;
+    allocator.free_fn(allocator.context, scanner->normalize_buffer);
+    allocator.free_fn(allocator.context, scanner->read_buffer);
+    allocator.free_fn(allocator.context, scanner->queue);
+    scanner->normalize_buffer = NULL;
+    scanner->read_buffer = NULL;
+    scanner->queue = NULL;
+
+    *records_out = scanner->records;
+    *record_count_out = scanner->record_count;
+    *arena_out = scanner->arena;
+    *arena_used_out = scanner->arena_used;
+    *records_allocation_out =
+        LIBRARY_SCANNER_MAX_SOURCES * sizeof(*scanner->records);
+    *arena_allocation_out = LIBRARY_SCANNER_PATH_ARENA_BYTES;
+    *allocator_out = allocator;
+
+    scanner->records = NULL;
+    scanner->record_count = 0U;
+    scanner->logical_record_count = 0U;
+    scanner->arena = NULL;
+    scanner->arena_used = 0U;
     return true;
 }
 
 bool library_scanner_start(library_scanner_t *scanner)
 {
-    if (scanner == NULL || scanner->state != LIBRARY_SCANNER_IDLE) return false;
+    if (scanner == NULL || scanner->state != LIBRARY_SCANNER_IDLE ||
+        scanner->records == NULL || scanner->arena == NULL || scanner->queue == NULL ||
+        scanner->read_buffer == NULL || scanner->normalize_buffer == NULL) return false;
     reset_generation_work(scanner);
     ++scanner->generation;
     scanner->state = LIBRARY_SCANNER_SCANNING;
@@ -491,7 +545,9 @@ bool library_scanner_start(library_scanner_t *scanner)
 
 bool library_scanner_restart(library_scanner_t *scanner)
 {
-    if (scanner == NULL || !close_all(scanner)) return false;
+    if (scanner == NULL || scanner->records == NULL || scanner->arena == NULL ||
+        scanner->queue == NULL || scanner->read_buffer == NULL ||
+        scanner->normalize_buffer == NULL || !close_all(scanner)) return false;
     reset_generation_work(scanner);
     ++scanner->generation;
     scanner->state = LIBRARY_SCANNER_SCANNING;
@@ -845,11 +901,24 @@ library_scan_result_t library_scanner_poll(library_scanner_t *scanner,
             if (!finish_candidate_close(scanner)) break;
         } else if (scanner->phase == LIBRARY_SCAN_PHASE_ADD_CANDIDATE) {
             library_scanner_record_t *record;
-            if (scanner->record_count >= LIBRARY_SCANNER_MAX_RECORDS) {
+            size_t index;
+            bool new_fingerprint = true;
+            for (index = 0U; index < scanner->record_count; ++index) {
+                if (rom_fingerprint_equal(&scanner->records[index].fingerprint,
+                                          &scanner->first_fingerprint)) {
+                    new_fingerprint = false;
+                    break;
+                }
+            }
+            if (scanner->record_count >= LIBRARY_SCANNER_MAX_SOURCES ||
+                (new_fingerprint &&
+                 scanner->logical_record_count >= LIBRARY_SCANNER_MAX_RECORDS)) {
                 fail_generation(scanner, true);
                 break;
             }
+            if (new_fingerprint) ++scanner->logical_record_count;
             record = &scanner->records[scanner->record_count++];
+            memset(record, 0, sizeof(*record));
             record->logical_path = arena_path(scanner,
                                               scanner->candidate_path_offset);
             record->header = scanner->header;

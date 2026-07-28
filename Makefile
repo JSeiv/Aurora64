@@ -71,6 +71,7 @@ SRCS = \
 	menu/library/library_roots.c \
 	menu/library/library_fs_libdragon.c \
 	menu/library/library_scanner.c \
+	menu/library/library_snapshot.c \
 	menu/settings.c \
 	menu/sound.c \
 	menu/ui_components/background.c \
