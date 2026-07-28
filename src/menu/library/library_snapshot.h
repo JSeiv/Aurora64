@@ -104,6 +104,11 @@ void library_snapshot_store_init(library_snapshot_store_t *store);
 bool library_snapshot_store_mark_stale(library_snapshot_store_t *store);
 bool library_snapshot_store_begin_revalidation(library_snapshot_store_t *store);
 bool library_snapshot_store_fail(library_snapshot_store_t *store);
+/* Preserve the failed publication while making a later refresh retryable. */
+bool library_snapshot_store_retry(library_snapshot_store_t *store);
+/* True only while an acquired current and retired handle block replacement. */
+bool library_snapshot_store_refresh_blocked(
+    library_snapshot_store_t *store);
 /* Legal only while REVALIDATING. Transactional; consumes builder only on success. */
 bool library_snapshot_store_publish(library_snapshot_store_t *store,
                                     library_snapshot_builder_t *builder,

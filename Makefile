@@ -11,6 +11,7 @@ OUTPUT_DIR = output
 MENU_VERSION ?= "Preview release"
 AURORA64_HOME ?= 0
 AURORA64_LAUNCH_PROOF ?= 0
+AURORA64_LIBRARY_TIMING ?= 0
 BUILD_TIMESTAMP = "$(shell TZ='UTC' date "+%Y-%m-%d %H:%M:%S %:z")"
 
 HOST_TEST_GOALS := host-test host-test-sanitize
@@ -32,6 +33,7 @@ N64_ROM_REGION = E
 N64_CFLAGS += -iquote $(SOURCE_DIR) -iquote $(ASSETS_DIR) -I $(SOURCE_DIR)/libs -isystem $(SOURCE_DIR)/libs/miniz -flto=auto $(FLAGS)
 N64_CFLAGS += -DFEATURE_AURORA_HOME_ENABLED=$(AURORA64_HOME)
 N64_CFLAGS += -DFEATURE_AURORA_LAUNCH_PROOF_ENABLED=$(AURORA64_LAUNCH_PROOF)
+N64_CFLAGS += -DFEATURE_AURORA_LIBRARY_TIMING_ENABLED=$(AURORA64_LIBRARY_TIMING)
 
 SRCS = \
 	main.c \
@@ -72,6 +74,7 @@ SRCS = \
 	menu/library/library_fs_libdragon.c \
 	menu/library/library_scanner.c \
 	menu/library/library_snapshot.c \
+	menu/library/library_service.c \
 	menu/settings.c \
 	menu/sound.c \
 	menu/ui_components/background.c \

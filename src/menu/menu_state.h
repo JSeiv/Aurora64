@@ -19,38 +19,7 @@
 #include "rom_info.h"
 #include "settings.h"
 #include "bookkeeping.h"
-
-
-/** @brief Menu mode enumeration */
-typedef enum {
-    MENU_MODE_NONE,
-    MENU_MODE_STARTUP,
-    MENU_MODE_HOME,
-    MENU_MODE_STATIC_LIBRARY,
-    MENU_MODE_BROWSER,
-    MENU_MODE_FILE_INFO,
-    MENU_MODE_SYSTEM_INFO,
-    MENU_MODE_IMAGE_VIEWER,
-    MENU_MODE_TEXT_VIEWER,
-    MENU_MODE_MUSIC_PLAYER,
-    MENU_MODE_CREDITS,
-    MENU_MODE_SETTINGS_EDITOR,
-    MENU_MODE_RTC,
-    MENU_MODE_CONTROLLER_PAKFS,
-    MENU_MODE_CONTROLLER_PAK_DUMP_INFO,
-    MENU_MODE_CONTROLLER_PAK_DUMP_NOTE_INFO,
-    MENU_MODE_FLASHCART,
-    MENU_MODE_LOAD_ROM,
-    MENU_MODE_LOAD_DISK,
-    MENU_MODE_LOAD_EMULATOR,
-    MENU_MODE_ERROR,
-    MENU_MODE_FAULT,
-    MENU_MODE_BOOT,
-    MENU_MODE_FAVORITE,
-    MENU_MODE_HISTORY,
-    MENU_MODE_DATEL_CODE_EDITOR,
-    MENU_MODE_EXTRACT_FILE
-} menu_mode_t;
+#include "library/library_service.h"
 
 /** @brief File entry type enumeration */
 typedef enum {
@@ -98,6 +67,7 @@ typedef struct {
     settings_t settings;
     bookkeeping_t bookkeeping;
     boot_params_t *boot_params;
+    library_service_t *library_service;
 
     char *error_message;
     flashcart_err_t flashcart_err;

@@ -237,6 +237,10 @@ void test_library_snapshot_status_immutability_and_failure(void)
     TEST_CHECK(library_snapshot_store_status(&store) == LIBRARY_SNAPSHOT_FAILED_STALE);
     TEST_CHECK(library_snapshot_status(store.published) == LIBRARY_SNAPSHOT_FAILED_STALE);
     TEST_CHECK(!library_snapshot_store_mark_stale(&store));
+    TEST_ASSERT(library_snapshot_store_retry(&store));
+    TEST_CHECK(library_snapshot_store_status(&store) == LIBRARY_SNAPSHOT_STALE);
+    TEST_ASSERT(library_snapshot_store_begin_revalidation(&store));
+    TEST_ASSERT(library_snapshot_store_fail(&store));
     library_snapshot_store_deinit(&store);
 }
 

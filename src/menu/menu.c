@@ -17,6 +17,7 @@
 #include "hdmi.h"
 #include "menu_state.h"
 #include "menu.h"
+#include "library/library_service.h"
 #include "mp3_player.h"
 #include "png_decoder.h"
 #include "settings.h"
@@ -34,6 +35,41 @@
 #define BACKGROUND_CACHE_FILE       "background.data"
 
 #define FPS_LIMIT                   (30.0f)
+#define LIBRARY_DRAIN_GUARD         20000U
+
+#ifndef FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+#define FEATURE_AURORA_LIBRARY_TIMING_ENABLED 0
+#endif
+
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+typedef struct {
+    uint32_t last_service_poll;
+    uint32_t last_usb_poll;
+    uint32_t max_service_gap;
+    uint32_t max_service_duration;
+    uint32_t max_usb_gap;
+} library_timing_t;
+
+static library_timing_t library_timing;
+
+static void library_timing_record_gap(const char *name, uint32_t *last,
+                                      uint32_t *maximum)
+{
+    uint32_t now = TICKS_READ();
+    uint32_t gap;
+    if (*last == 0U) {
+        *last = now;
+        return;
+    }
+    gap = (uint32_t)TICKS_DISTANCE(*last, now);
+    *last = now;
+    if (gap > *maximum) {
+        *maximum = gap;
+        debugf("[LIBRARY TIMING] max %s: %lu us\n", name,
+               (unsigned long)TICKS_TO_US(gap));
+    }
+}
+#endif
 
 static menu_t *menu;
 
@@ -87,7 +123,23 @@ static void menu_init (boot_params_t *boot_params) {
     menu->load.load_favorite_id = -1;
     path_pop(path);
 
-    // Force interlacing off in VI settings for TVs and other devices that struggle with interlaced video input.
+    library_service_config_t library_config = {
+        .fs = NULL,
+        .roots = library_roots_default(),
+        .budget = {
+            .max_directory_entries = 8U,
+            .max_read_bytes = 4096U,
+            .max_ticks = TICKS_FROM_MS(10U),
+        },
+        .allocator = NULL,
+        .storage_prefix = menu->storage_prefix,
+    };
+    if (menu->flashcart_err == FLASHCART_OK &&
+        !library_service_init(&menu->library_service, &library_config)) {
+        menu->next_mode = MENU_MODE_FAULT;
+    }
+
+    // Force interlacing off
     interlaced = !menu->settings.force_progressive_scan;
 
     resolution_t resolution = {
@@ -141,6 +193,21 @@ static void menu_init (boot_params_t *boot_params) {
  * @param menu Pointer to the menu structure.
  */
 static void menu_deinit (menu_t *menu) {
+    size_t library_drain;
+    if (menu->library_service != NULL) {
+        library_service_request_cancel(menu->library_service);
+        for (library_drain = 0U;
+             library_drain < LIBRARY_DRAIN_GUARD &&
+             !library_service_is_quiesced(menu->library_service);
+             ++library_drain) {
+            library_service_poll(menu->library_service, MENU_MODE_BOOT);
+        }
+        assert(library_service_is_quiesced(menu->library_service));
+        if (!library_service_is_quiesced(menu->library_service)) return;
+        library_service_free(menu->library_service);
+        menu->library_service = NULL;
+    }
+
     ui_components_background_free();
     rspq_wait();  // Execute deferred callbacks (e.g., display list freeing) before closing RSPQ
 
@@ -251,6 +318,25 @@ void menu_run (boot_params_t *boot_params) {
                 display_show(display);
             }
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            library_timing_record_gap("service opportunity",
+                                      &library_timing.last_service_poll,
+                                      &library_timing.max_service_gap);
+            uint32_t library_poll_start = TICKS_READ();
+#endif
+            library_service_poll(menu->library_service, menu->mode);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            uint32_t library_poll_duration =
+                (uint32_t)TICKS_DISTANCE(library_poll_start, TICKS_READ());
+            if (library_poll_duration > library_timing.max_service_duration) {
+                library_timing.max_service_duration = library_poll_duration;
+                debugf("[LIBRARY TIMING] max service poll: %lu us\n",
+                       (unsigned long)TICKS_TO_US(library_poll_duration));
+            }
+#endif
+            (void)library_service_coordinate_transition(
+                menu->library_service, menu->mode, &menu->next_mode);
+
             if (menu->mode == MENU_MODE_BOOT) {
                 break;
             }
@@ -271,6 +357,11 @@ void menu_run (boot_params_t *boot_params) {
 
         png_decoder_poll();
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        library_timing_record_gap("USB opportunity",
+                                  &library_timing.last_usb_poll,
+                                  &library_timing.max_usb_gap);
+#endif
         usb_comm_poll(menu);
     }
 

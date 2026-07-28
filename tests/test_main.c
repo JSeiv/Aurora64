@@ -68,6 +68,20 @@ void test_library_snapshot_selection_reconciliation(void);
 void test_library_snapshot_capacity_poison_and_cancel(void);
 void test_library_snapshot_oom_retains_publication(void);
 void test_library_snapshot_heap_accounting(void);
+void test_library_service_init_is_lazy_and_safe_modes_start(void);
+void test_library_service_unsafe_modes_never_start_work(void);
+void test_library_service_one_bounded_unit_per_poll(void);
+void test_library_service_pause_quiesce_resume_and_retry_close(void);
+void test_library_service_cancel_quiesce_restart_and_file_close(void);
+void test_library_service_pause_after_completion_drains_publication(void);
+void test_library_service_complete_publication_is_atomic(void);
+void test_library_service_failure_retains_old_snapshot(void);
+void test_library_service_acquisition_and_scanner_transfer_lifetimes(void);
+void test_library_service_reader_backpressure_retries_restart(void);
+void test_library_service_transition_coordinator_defers_all_safe_exits(void);
+void test_library_service_free_is_fail_closed_until_quiesced(void);
+void test_library_service_init_and_owned_allocation_failures_are_atomic(void);
+void test_library_service_every_refresh_oom_retains_publication(void);
 
 static void test_smoke(void)
 {
@@ -203,5 +217,19 @@ TEST_LIST = {
     { "library-snapshot/capacity-poison-cancel", test_library_snapshot_capacity_poison_and_cancel },
     { "library-snapshot/oom-retains-publication", test_library_snapshot_oom_retains_publication },
     { "library-snapshot/heap-accounting", test_library_snapshot_heap_accounting },
+    { "library-service/lazy-init-safe-modes", test_library_service_init_is_lazy_and_safe_modes_start },
+    { "library-service/unsafe-modes", test_library_service_unsafe_modes_never_start_work },
+    { "library-service/one-bounded-unit", test_library_service_one_bounded_unit_per_poll },
+    { "library-service/pause-quiesce-resume-close", test_library_service_pause_quiesce_resume_and_retry_close },
+    { "library-service/cancel-quiesce-restart-close", test_library_service_cancel_quiesce_restart_and_file_close },
+    { "library-service/pause-after-completion", test_library_service_pause_after_completion_drains_publication },
+    { "library-service/atomic-publication", test_library_service_complete_publication_is_atomic },
+    { "library-service/failure-retains-old", test_library_service_failure_retains_old_snapshot },
+    { "library-service/acquisition-transfer-lifetimes", test_library_service_acquisition_and_scanner_transfer_lifetimes },
+    { "library-service/reader-backpressure-retry", test_library_service_reader_backpressure_retries_restart },
+    { "library-service/transition-coordinator", test_library_service_transition_coordinator_defers_all_safe_exits },
+    { "library-service/free-only-quiesced", test_library_service_free_is_fail_closed_until_quiesced },
+    { "library-service/init-oom-atomic", test_library_service_init_and_owned_allocation_failures_are_atomic },
+    { "library-service/refresh-oom-retains", test_library_service_every_refresh_oom_retains_publication },
     { NULL, NULL }
 };

@@ -842,6 +842,20 @@ bool library_snapshot_store_fail(library_snapshot_store_t *store)
                                LIBRARY_SNAPSHOT_FAILED_STALE);
 }
 
+bool library_snapshot_store_retry(library_snapshot_store_t *store)
+{
+    return transition_snapshot(store, LIBRARY_SNAPSHOT_FAILED_STALE,
+                               LIBRARY_SNAPSHOT_STALE);
+}
+
+bool library_snapshot_store_refresh_blocked(library_snapshot_store_t *store)
+{
+    if (store == NULL) return false;
+    cleanup_retired(store);
+    return store->published != NULL && store->published->refcount > 1U &&
+           store->retired != NULL;
+}
+
 bool library_snapshot_store_publish(library_snapshot_store_t *store,
                                     library_snapshot_builder_t *builder,
                                     uint32_t warning_count,
