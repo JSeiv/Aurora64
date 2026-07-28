@@ -48,6 +48,17 @@ void test_libdragon_adapter_init_bounds_and_zeroing(void);
 void test_libdragon_adapter_two_instance_handle_provenance(void);
 void test_libdragon_adapter_files_stat_cross_tokens_and_pool(void);
 void test_libdragon_adapter_token_exhaustion_preflight(void);
+void test_library_scanner_cooperative_traversal_and_validation(void);
+void test_library_scanner_two_pass_retry_and_replacement(void);
+void test_library_scanner_mutation_failure_and_candidate_io(void);
+void test_library_scanner_pause_resume_cancel_and_ticks(void);
+void test_library_scanner_fatal_directory_and_capacity(void);
+void test_library_scanner_oom_every_allocation(void);
+void test_library_scanner_removal_truncation_and_close_retry(void);
+void test_library_scanner_invalid_header_close_retry(void);
+void test_library_scanner_destroy_retries_directory_close(void);
+void test_library_scanner_tick_expiry_stops_reads(void);
+void test_library_scanner_directory_capacity_classes(void);
 
 static void test_smoke(void)
 {
@@ -163,5 +174,16 @@ TEST_LIST = {
     { "library-fs/libdragon-two-instance-provenance", test_libdragon_adapter_two_instance_handle_provenance },
     { "library-fs/libdragon-files-stat-cross-pool", test_libdragon_adapter_files_stat_cross_tokens_and_pool },
     { "library-fs/libdragon-token-exhaustion-preflight", test_libdragon_adapter_token_exhaustion_preflight },
+    { "library-scanner/cooperation-traversal-validation", test_library_scanner_cooperative_traversal_and_validation },
+    { "library-scanner/two-pass-retry-replacement", test_library_scanner_two_pass_retry_and_replacement },
+    { "library-scanner/mutation-candidate-io", test_library_scanner_mutation_failure_and_candidate_io },
+    { "library-scanner/pause-resume-cancel-ticks", test_library_scanner_pause_resume_cancel_and_ticks },
+    { "library-scanner/fatal-directory-capacity", test_library_scanner_fatal_directory_and_capacity },
+    { "library-scanner/oom-every-allocation", test_library_scanner_oom_every_allocation },
+    { "library-scanner/removal-truncation-close-retry", test_library_scanner_removal_truncation_and_close_retry },
+    { "library-scanner/invalid-header-close-retry", test_library_scanner_invalid_header_close_retry },
+    { "library-scanner/destroy-directory-close-retry", test_library_scanner_destroy_retries_directory_close },
+    { "library-scanner/tick-expiry-stops-reads", test_library_scanner_tick_expiry_stops_reads },
+    { "library-scanner/directory-capacity-classes", test_library_scanner_directory_capacity_classes },
     { NULL, NULL }
 };
