@@ -49,19 +49,19 @@ void view_home_init(menu_t *menu);
 void view_home_display(menu_t *menu, surface_t *display);
 
 /**
- * @brief Initialize the static library view.
+ * @brief Initialize the All Games library view.
  *
  * @param menu Pointer to the menu structure.
  */
-void view_static_library_init(menu_t *menu);
+void view_all_games_init(menu_t *menu);
 
 /**
- * @brief Display the static library view.
+ * @brief Display the All Games library view.
  *
  * @param menu Pointer to the menu structure.
  * @param display Pointer to the display surface.
  */
-void view_static_library_display(menu_t *menu, surface_t *display);
+void view_all_games_display(menu_t *menu, surface_t *display);
 
 /**
  * @brief Initialize the browser view.

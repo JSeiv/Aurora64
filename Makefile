@@ -11,6 +11,10 @@ OUTPUT_DIR = output
 MENU_VERSION ?= "Preview release"
 AURORA64_HOME ?= 0
 AURORA64_LAUNCH_PROOF ?= 0
+AURORA64_LIBRARY_ORIGIN := $(origin AURORA64_LIBRARY)
+ifeq ($(AURORA64_LIBRARY_ORIGIN),undefined)
+AURORA64_LIBRARY := $(if $(filter 1,$(AURORA64_LAUNCH_PROOF)),1,0)
+endif
 AURORA64_LIBRARY_TIMING ?= 0
 BUILD_TIMESTAMP = "$(shell TZ='UTC' date "+%Y-%m-%d %H:%M:%S %:z")"
 
@@ -33,6 +37,7 @@ N64_ROM_REGION = E
 N64_CFLAGS += -iquote $(SOURCE_DIR) -iquote $(ASSETS_DIR) -I $(SOURCE_DIR)/libs -isystem $(SOURCE_DIR)/libs/miniz -flto=auto $(FLAGS)
 N64_CFLAGS += -DFEATURE_AURORA_HOME_ENABLED=$(AURORA64_HOME)
 N64_CFLAGS += -DFEATURE_AURORA_LAUNCH_PROOF_ENABLED=$(AURORA64_LAUNCH_PROOF)
+N64_CFLAGS += -DFEATURE_AURORA_LIBRARY_ENABLED=$(AURORA64_LIBRARY)
 N64_CFLAGS += -DFEATURE_AURORA_LIBRARY_TIMING_ENABLED=$(AURORA64_LIBRARY_TIMING)
 
 SRCS = \
@@ -94,7 +99,7 @@ SRCS = \
 	menu/views/file_info.c \
 	menu/views/history_favorites.c \
 	menu/views/home.c \
-	menu/views/static_library.c \
+	menu/views/all_games.c \
 	menu/views/image_viewer.c \
 	menu/views/text_viewer.c \
 	menu/views/load_disk.c \
@@ -242,6 +247,12 @@ host-test:
 host-test-sanitize:
 	$(MAKE) -C tests test-sanitize
 .PHONY: host-test-sanitize
+
+print-library-config:
+	@printf 'home=%s library=%s launch_proof=%s library_origin=%s\n' \
+		'$(AURORA64_HOME)' '$(AURORA64_LIBRARY)' '$(AURORA64_LAUNCH_PROOF)' \
+		'$(AURORA64_LIBRARY_ORIGIN)'
+.PHONY: print-library-config
 
 .FORCE:
 

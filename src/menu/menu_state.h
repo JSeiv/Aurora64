@@ -93,8 +93,16 @@ typedef struct {
     } home;
 
     struct {
-        int32_t selected;
-    } static_library;
+        rom_fingerprint_t selected_fingerprint;
+        rom_fingerprint_t pending_fingerprint;
+        uint32_t last_resolved_index;
+        uint32_t visual_offset;
+        uint32_t observed_generation;
+        menu_mode_t pending_destination;
+        uint8_t transition;
+        uint8_t message;
+        bool selected_valid;
+    } library_view;
 
     struct {
         menu_mode_t return_mode;

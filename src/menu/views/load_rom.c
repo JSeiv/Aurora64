@@ -29,9 +29,9 @@ static bool metadata_image_available[sizeof(metadata_image_filename_cache) / siz
 static bool metadata_images_scanned = false;
 
 static menu_mode_t validate_return_mode(menu_mode_t return_mode) {
-#if FEATURE_AURORA_HOME_ENABLED && FEATURE_AURORA_LAUNCH_PROOF_ENABLED
-    if (return_mode == MENU_MODE_STATIC_LIBRARY) {
-        return MENU_MODE_STATIC_LIBRARY;
+#if FEATURE_AURORA_HOME_ENABLED && FEATURE_AURORA_LIBRARY_ENABLED
+    if (return_mode == MENU_MODE_LIBRARY) {
+        return MENU_MODE_LIBRARY;
     }
 #else
     (void)return_mode;
@@ -556,7 +556,7 @@ static void draw (menu_t *menu, surface_t *d) {
             ALIGN_LEFT, VALIGN_TOP,
             "A: Load and run ROM\n"
             "%s\n",
-            validate_return_mode(menu->load.return_mode) == MENU_MODE_STATIC_LIBRARY ? "B: Library" : "B: Back"
+            validate_return_mode(menu->load.return_mode) == MENU_MODE_LIBRARY ? "B: Library" : "B: Back"
         );
 
         ui_components_actions_bar_text_draw(
@@ -842,7 +842,7 @@ static bool resolve_rom_path(menu_t *menu, bool *autoload, bool *resume) {
 void view_load_rom_set_pending_path(menu_t *menu, path_t *rom_path, menu_mode_t return_mode) {
     path_free(menu->load.pending_rom_path);
     menu->load.pending_rom_path = rom_path;
-    menu->load.pending_rom_path_set = true;
+    menu->load.pending_rom_path_set = rom_path != NULL;
     menu->load.pending_return_mode = validate_return_mode(return_mode);
     menu->load.load_history_id = -1;
     menu->load.load_favorite_id = -1;

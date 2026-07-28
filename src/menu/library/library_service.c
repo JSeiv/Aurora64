@@ -73,7 +73,7 @@ static bool allocator_valid(const library_allocator_t *allocator)
 
 static bool safe_mode(menu_mode_t mode)
 {
-    return mode == MENU_MODE_HOME || mode == MENU_MODE_STATIC_LIBRARY;
+    return mode == MENU_MODE_HOME || mode == MENU_MODE_LIBRARY;
 }
 
 static bool ensure_adapter(library_service_t *service)

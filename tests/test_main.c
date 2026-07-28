@@ -82,6 +82,16 @@ void test_library_service_transition_coordinator_defers_all_safe_exits(void);
 void test_library_service_free_is_fail_closed_until_quiesced(void);
 void test_library_service_init_and_owned_allocation_failures_are_atomic(void);
 void test_library_service_every_refresh_oom_retains_publication(void);
+void test_library_view_counts_navigation_and_pages(void);
+void test_library_view_title_precedence_and_bounds(void);
+void test_library_view_identity_reconciliation(void);
+void test_path_fallible_success_clone_and_every_oom(void);
+void test_path_asserting_apis_still_work(void);
+void test_library_view_source_validation(void);
+void test_library_view_launch_quiescence_and_ownership(void);
+void test_library_view_launch_failure_recovery(void);
+void test_library_view_selection_removed_while_pausing(void);
+void test_library_view_exit_gating_and_balanced_snapshots(void);
 
 static void test_smoke(void)
 {
@@ -231,5 +241,15 @@ TEST_LIST = {
     { "library-service/free-only-quiesced", test_library_service_free_is_fail_closed_until_quiesced },
     { "library-service/init-oom-atomic", test_library_service_init_and_owned_allocation_failures_are_atomic },
     { "library-service/refresh-oom-retains", test_library_service_every_refresh_oom_retains_publication },
+    { "library-view/counts-navigation-pages", test_library_view_counts_navigation_and_pages },
+    { "library-view/title-precedence-bounds", test_library_view_title_precedence_and_bounds },
+    { "library-view/identity-reconciliation", test_library_view_identity_reconciliation },
+    { "path/fallible-success-every-oom", test_path_fallible_success_clone_and_every_oom },
+    { "path/asserting-apis", test_path_asserting_apis_still_work },
+    { "library-view/source-validation", test_library_view_source_validation },
+    { "library-view/launch-quiescence-ownership", test_library_view_launch_quiescence_and_ownership },
+    { "library-view/launch-failure-recovery", test_library_view_launch_failure_recovery },
+    { "library-view/selection-removed-while-pausing", test_library_view_selection_removed_while_pausing },
+    { "library-view/exit-gating-balanced-snapshots", test_library_view_exit_gating_and_balanced_snapshots },
     { NULL, NULL }
 };

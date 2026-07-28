@@ -335,7 +335,7 @@ void test_library_service_init_is_lazy_and_safe_modes_start(void)
     library_service_request_cancel(fixture.service);
     poll_until_quiesced(&fixture, MENU_MODE_BROWSER);
     library_service_restart(fixture.service);
-    begin_poll(&fixture, MENU_MODE_STATIC_LIBRARY);
+    begin_poll(&fixture, MENU_MODE_LIBRARY);
     TEST_CHECK(!library_service_is_quiesced(fixture.service));
     fixture_destroy(&fixture);
 }
@@ -347,7 +347,7 @@ void test_library_service_unsafe_modes_never_start_work(void)
     fixture_init(&fixture, true);
     for (mode = MENU_MODE_NONE; mode <= MENU_MODE_EXTRACT_FILE;
          mode = (menu_mode_t)(mode + 1)) {
-        if (mode == MENU_MODE_HOME || mode == MENU_MODE_STATIC_LIBRARY) continue;
+        if (mode == MENU_MODE_HOME || mode == MENU_MODE_LIBRARY) continue;
         begin_poll(&fixture, mode);
         TEST_CHECK_(fixture.fs.fake.dir_open_calls == 0U,
                     "unsafe mode %d started discovery", (int)mode);
@@ -641,21 +641,21 @@ void test_library_service_transition_coordinator_defers_all_safe_exits(void)
     for (guard = 0U; guard < SERVICE_GUARD && fixture.fs.fake.active_dir_handles == 0U; ++guard)
         begin_poll(&fixture, MENU_MODE_HOME);
     TEST_ASSERT(fixture.fs.fake.active_dir_handles != 0U);
-    exercise_transition(&fixture, MENU_MODE_HOME, MENU_MODE_STATIC_LIBRARY);
+    exercise_transition(&fixture, MENU_MODE_HOME, MENU_MODE_LIBRARY);
     fixture_destroy(&fixture);
 
     fixture_init(&fixture, true);
     for (guard = 0U; guard < SERVICE_GUARD && fixture.fs.fake.active_dir_handles == 0U; ++guard)
-        begin_poll(&fixture, MENU_MODE_STATIC_LIBRARY);
+        begin_poll(&fixture, MENU_MODE_LIBRARY);
     TEST_ASSERT(fixture.fs.fake.active_dir_handles != 0U);
-    exercise_transition(&fixture, MENU_MODE_STATIC_LIBRARY, MENU_MODE_LOAD_ROM);
+    exercise_transition(&fixture, MENU_MODE_LIBRARY, MENU_MODE_LOAD_ROM);
     fixture_destroy(&fixture);
 
     fixture_init(&fixture, true);
     for (guard = 0U; guard < SERVICE_GUARD && fixture.fs.fake.active_dir_handles == 0U; ++guard)
-        begin_poll(&fixture, MENU_MODE_STATIC_LIBRARY);
+        begin_poll(&fixture, MENU_MODE_LIBRARY);
     TEST_ASSERT(fixture.fs.fake.active_dir_handles != 0U);
-    exercise_transition(&fixture, MENU_MODE_STATIC_LIBRARY, MENU_MODE_HOME);
+    exercise_transition(&fixture, MENU_MODE_LIBRARY, MENU_MODE_HOME);
     fixture_destroy(&fixture);
 }
 
