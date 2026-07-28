@@ -21,18 +21,24 @@ SOURCES := test_main.c test_rom_header.c test_sha256.c test_rom_identity.c test_
 
 .PHONY: test test-sanitize test-compat-flags clean force-test-build
 
+define assert-library-config
+	@actual="$$($(MAKE) -s --no-print-directory -f ../Makefile SKIP_N64_MK=1 $(1) print-library-config)"; \
+	expected='$(2)'; \
+	if test "$$actual" != "$$expected"; then \
+		printf 'compatibility case %s mismatch\nexpected: %s\nactual:   %s\n' \
+			'$(3)' "$$expected" "$$actual" >&2; \
+		exit 1; \
+	fi
+endef
+
 test: test-compat-flags $(TEST_BINARY)
 	./$(TEST_BINARY)
 
 test-compat-flags:
-	@test "$$($(MAKE) -s -f ../Makefile SKIP_N64_MK=1 print-library-config)" = \
-		'home=0 library=0 launch_proof=0 library_origin=undefined'
-	@test "$$($(MAKE) -s -f ../Makefile SKIP_N64_MK=1 AURORA64_LAUNCH_PROOF=1 print-library-config)" = \
-		'home=0 library=1 launch_proof=1 library_origin=undefined'
-	@test "$$($(MAKE) -s -f ../Makefile SKIP_N64_MK=1 AURORA64_LIBRARY=0 AURORA64_LAUNCH_PROOF=1 print-library-config)" = \
-		'home=0 library=0 launch_proof=1 library_origin=command line'
-	@test "$$($(MAKE) -s -f ../Makefile SKIP_N64_MK=1 AURORA64_LIBRARY=1 AURORA64_LAUNCH_PROOF=0 print-library-config)" = \
-		'home=0 library=1 launch_proof=0 library_origin=command line'
+	$(call assert-library-config,,home=0 library=0 launch_proof=0 library_origin=undefined,default)
+	$(call assert-library-config,AURORA64_LAUNCH_PROOF=1,home=0 library=1 launch_proof=1 library_origin=undefined,compat)
+	$(call assert-library-config,AURORA64_LIBRARY=0 AURORA64_LAUNCH_PROOF=1,home=0 library=0 launch_proof=1 library_origin=command line,explicit0)
+	$(call assert-library-config,AURORA64_LIBRARY=1 AURORA64_LAUNCH_PROOF=0,home=0 library=1 launch_proof=0 library_origin=command line,explicit1)
 
 $(TEST_BINARY): force-test-build $(SOURCES) support/test_alloc.h ../src/libs/acutest/acutest.h
 	@mkdir -p $(@D)

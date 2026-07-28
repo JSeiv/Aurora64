@@ -5,6 +5,7 @@
  */
 
 #include <assert.h>
+#include <alloca.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
