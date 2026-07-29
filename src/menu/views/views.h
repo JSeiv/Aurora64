@@ -11,6 +11,9 @@
 
 #include "../ui_components.h"
 #include "../menu_state.h"
+#ifdef LOAD_ROM_HOST_TEST
+#include "../cart_load.h"
+#endif
 
 /**
  * @addtogroup view
@@ -275,6 +278,17 @@ void view_load_rom_display(menu_t *menu, surface_t *display);
  */
 void view_load_rom_set_pending_path(menu_t *menu, path_t *rom_path, menu_mode_t return_mode);
 
+#ifdef LOAD_ROM_HOST_TEST
+/** Narrow host seam for the production launch validator's bounded seeks. */
+typedef int (*view_load_rom_host_seek_t)(void *context, void *handle,
+                                         uint64_t offset);
+void view_load_rom_host_set_validation_fs(
+    const library_fs_t *fs, view_load_rom_host_seek_t seek_callback,
+    const library_source_t *source);
+void view_load_rom_host_set_cart_load(
+    cart_load_err_t (*callback)(menu_t *menu));
+#endif
+
 /**
  * @brief Initialize the load disk view.
  *
@@ -402,6 +416,16 @@ void view_extract_file_display(menu_t *menu, surface_t *display);
  * @param error_message Error message to be displayed.
  */
 void menu_show_error(menu_t *menu, char *error_message);
+
+/**
+ * @brief Show an error that may safely return to its Library origin.
+ *
+ * Invalid origins or return data retain menu_show_error's Browser fallback.
+ */
+void menu_show_error_context(menu_t *menu, char *error_message,
+                             menu_mode_t return_mode,
+                             const rom_fingerprint_t *fingerprint,
+                             int32_t page_anchor);
 
 /** @} */ /* view */
 

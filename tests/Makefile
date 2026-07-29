@@ -2,9 +2,15 @@ CC ?= cc
 STRICT_CFLAGS := -std=c11 -Wall -Wextra -Werror -pedantic
 override CFLAGS := $(filter-out $(STRICT_CFLAGS),$(CFLAGS)) $(STRICT_CFLAGS)
 CPPFLAGS ?=
-override CPPFLAGS += -DLIBRARY_FS_HOST_TEST -DPATH_HOST_TEST -DLIBRARY_VIEW_HOST_TEST
+override CPPFLAGS += -DLIBRARY_FS_HOST_TEST -DPATH_HOST_TEST -DLIBRARY_VIEW_HOST_TEST -DERROR_CONTEXT_HOST_TEST
 LDFLAGS ?=
 SANITIZE_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer
+
+ifeq ($(shell uname -s),Darwin)
+HOST_SECTION_GC := -Wl,-dead_strip
+else
+HOST_SECTION_GC := -Wl,--gc-sections
+endif
 
 BUILD_DIR := build
 TEST_BINARY ?= $(BUILD_DIR)/tests
@@ -18,6 +24,11 @@ SOURCES := test_main.c test_rom_header.c test_sha256.c test_rom_identity.c test_
 	../src/menu/library/library_scanner.c ../src/menu/library/library_snapshot.c \
 	../src/menu/library/library_service.c ../src/menu/path.c ../src/menu/views/all_games.c \
 	../src/menu/library/library_fs_libdragon.c
+LOAD_ROM_OBJECT = $(dir $(TASK10_TEST_BINARY))load_rom_host.o
+TASK10_TEST_BINARY ?= $(BUILD_DIR)/task10_tests
+SANITIZE_TASK10_TEST_BINARY := $(SANITIZE_BUILD_DIR)/task10_tests
+TASK10_SOURCES := test_error_context.c ../src/menu/path.c ../src/menu/views/error.c \
+	../src/menu/library/rom_header.c
 
 .PHONY: test test-sanitize test-compat-flags clean force-test-build
 
@@ -31,8 +42,9 @@ define assert-library-config
 	fi
 endef
 
-test: test-compat-flags $(TEST_BINARY)
+test: test-compat-flags $(TEST_BINARY) $(TASK10_TEST_BINARY)
 	./$(TEST_BINARY)
+	./$(TASK10_TEST_BINARY)
 
 test-compat-flags:
 	$(call assert-library-config,,home=0 library=0 launch_proof=0 library_origin=undefined,default)
@@ -42,11 +54,25 @@ test-compat-flags:
 
 $(TEST_BINARY): force-test-build $(SOURCES) support/test_alloc.h ../src/libs/acutest/acutest.h
 	@mkdir -p $(@D)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I../src -I../src/libs -I../src/libs/acutest -I../src/libs/miniz -I../libdragon/include -I. $(SOURCES) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -I../src -I../src/libs -I../src/libs/acutest -I../src/libs/miniz -I../libdragon/include -I. $(SOURCES) $(LDFLAGS) $(HOST_SECTION_GC) -o $@
+
+$(LOAD_ROM_OBJECT): ../src/menu/views/load_rom.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -DLOAD_ROM_HOST_TEST \
+		-DFEATURE_AURORA_HOME_ENABLED=1 -DFEATURE_AURORA_LIBRARY_ENABLED=1 \
+		-I../src -I../src/libs -I../src/libs/acutest -isystem ../src/libs/miniz -isystem ../libdragon/include -I. -c $< -o $@
+
+$(TASK10_TEST_BINARY): force-test-build $(TASK10_SOURCES) $(LOAD_ROM_OBJECT) ../src/libs/acutest/acutest.h
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -I../src -I../src/libs \
+		-I../src/libs/acutest -isystem ../src/libs/miniz -isystem ../libdragon/include -I. \
+		$(TASK10_SOURCES) $(LOAD_ROM_OBJECT) $(LDFLAGS) $(HOST_SECTION_GC) -o $@
 
 test-sanitize:
 	rm -rf $(SANITIZE_BUILD_DIR)
-	$(MAKE) test TEST_BINARY="$(SANITIZE_TEST_BINARY)" CFLAGS="$(CFLAGS) $(SANITIZE_FLAGS)" LDFLAGS="$(LDFLAGS) $(SANITIZE_FLAGS)"
+	$(MAKE) test TEST_BINARY="$(SANITIZE_TEST_BINARY)" \
+		TASK10_TEST_BINARY="$(SANITIZE_TASK10_TEST_BINARY)" \
+		CFLAGS="$(CFLAGS) $(SANITIZE_FLAGS)" LDFLAGS="$(LDFLAGS) $(SANITIZE_FLAGS)"
 
 force-test-build:
 

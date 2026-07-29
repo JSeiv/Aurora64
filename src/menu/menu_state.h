@@ -72,6 +72,14 @@ typedef struct {
     char *error_message;
     flashcart_err_t flashcart_err;
 
+    struct {
+        bool valid;
+        menu_mode_t return_mode;
+        bool fingerprint_valid;
+        rom_fingerprint_t fingerprint;
+        int32_t page_anchor;
+    } error_context;
+
     time_t current_time;
 
     struct {
@@ -125,6 +133,8 @@ typedef struct {
         path_t *rom_path;
         path_t *pending_rom_path;
         bool pending_rom_path_set;
+        bool expected_fingerprint_valid;
+        rom_fingerprint_t expected_fingerprint;
         menu_mode_t pending_return_mode;
         menu_mode_t return_mode;
         bool resume_from_datel;
