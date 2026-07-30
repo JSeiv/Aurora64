@@ -16,7 +16,7 @@ static void process (menu_t *menu) {
     if (menu->actions.back) {
         show_oss_lib_info_message = false;
         sound_play_effect(SFX_EXIT);
-        menu->next_mode = MENU_MODE_BROWSER; 
+        menu->next_mode = menu->credits.return_mode;
     } else if (menu->actions.lz_context) {
         if (show_oss_lib_info_message) {
             show_oss_lib_info_message = false;
@@ -96,6 +96,10 @@ static void draw (menu_t *menu, surface_t *d) {
 
 
 void view_credits_init (menu_t *menu) {
+    if (menu->credits.return_mode != MENU_MODE_HOME && menu->credits.return_mode != MENU_MODE_BROWSER) {
+        menu->credits.return_mode = MENU_MODE_BROWSER;
+    }
+
     sys_get_version(&sdk_version);
 }
 

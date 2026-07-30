@@ -5,6 +5,9 @@
  */
 
 #include <assert.h>
+#include <alloca.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -12,6 +15,45 @@
 
 #define PATH_CAPACITY_INITIAL   255
 #define PATH_CAPACITY_ALIGNMENT 32
+
+#ifdef PATH_HOST_TEST
+static size_t path_test_fail_after = SIZE_MAX;
+static size_t path_test_successes;
+static size_t path_test_live;
+
+static bool path_test_should_fail(void) { return path_test_successes >= path_test_fail_after; }
+static void *path_alloc_calloc(size_t count, size_t size) {
+    void *allocation;
+    if (path_test_should_fail()) return NULL;
+    allocation = calloc(count, size);
+    if (allocation != NULL) { ++path_test_successes; ++path_test_live; }
+    return allocation;
+}
+static void *path_alloc_realloc(void *old, size_t size) {
+    void *allocation;
+    if (path_test_should_fail()) return NULL;
+    allocation = realloc(old, size);
+    if (allocation != NULL) { ++path_test_successes; if (old == NULL) ++path_test_live; }
+    return allocation;
+}
+static void path_alloc_free(void *allocation) {
+    if (allocation != NULL) --path_test_live;
+    free(allocation);
+}
+void path_host_test_fail_after(size_t successful_allocations) {
+    path_test_successes = 0U;
+    path_test_fail_after = successful_allocations;
+}
+void path_host_test_reset(void) {
+    path_test_successes = 0U;
+    path_test_fail_after = SIZE_MAX;
+}
+size_t path_host_test_live_allocations(void) { return path_test_live; }
+#else
+#define path_alloc_calloc calloc
+#define path_alloc_realloc realloc
+#define path_alloc_free free
+#endif
 
 /**
  * @brief Resize the path buffer to accommodate the specified minimum length.
@@ -25,7 +67,7 @@ static void path_resize (path_t *path, size_t min_length) {
     if (alignment != (PATH_CAPACITY_ALIGNMENT - 1)) {
         path->capacity += PATH_CAPACITY_ALIGNMENT - alignment;
     }
-    path->buffer = realloc(path->buffer, (path->capacity + 1) * sizeof(char));
+    path->buffer = path_alloc_realloc(path->buffer, (path->capacity + 1) * sizeof(char));
     assert(path->buffer != NULL);
 }
 
@@ -39,7 +81,7 @@ path_t *path_create (const char *string) {
     if (string == NULL) {
         string = "";
     }
-    path_t *path = calloc(1, sizeof(path_t));
+    path_t *path = path_alloc_calloc(1, sizeof(path_t));
     assert(path != NULL);
     path_resize(path, strlen(string));
     memset(path->buffer, 0, path->capacity + 1);
@@ -84,6 +126,80 @@ path_t *path_init (const char *prefix, char *string) {
     return path;
 }
 
+static bool path_try_create(path_t **out, const char *string, size_t root_offset) {
+    path_t *created;
+    size_t length;
+    size_t capacity;
+    size_t alignment;
+    if (out == NULL) return false;
+    *out = NULL;
+    if (string == NULL) string = "";
+    length = strlen(string);
+    if (root_offset > length) return false;
+    capacity = length > PATH_CAPACITY_INITIAL ? length : PATH_CAPACITY_INITIAL;
+    alignment = capacity % PATH_CAPACITY_ALIGNMENT;
+    if (alignment != PATH_CAPACITY_ALIGNMENT - 1U) {
+        if (capacity > SIZE_MAX - (PATH_CAPACITY_ALIGNMENT - alignment)) return false;
+        capacity += PATH_CAPACITY_ALIGNMENT - alignment;
+    }
+    created = path_alloc_calloc(1U, sizeof(*created));
+    if (created == NULL) return false;
+    created->buffer = path_alloc_calloc(capacity + 1U, sizeof(char));
+    if (created->buffer == NULL) {
+        path_alloc_free(created);
+        return false;
+    }
+    memcpy(created->buffer, string, length + 1U);
+    created->capacity = capacity;
+    created->root = created->buffer + root_offset;
+    *out = created;
+    return true;
+}
+
+bool path_try_init(path_t **out, const char *prefix, const char *string) {
+    path_t *created;
+    size_t prefix_length;
+    size_t path_offset;
+    size_t path_length;
+    size_t total;
+    size_t root_offset;
+    size_t capacity;
+    size_t alignment;
+    if (out == NULL) return false;
+    *out = NULL;
+    if (prefix == NULL || string == NULL) return false;
+    prefix_length = strlen(prefix);
+    path_offset = string[0] == '/' ? 1U : 0U;
+    path_length = strlen(string + path_offset);
+    if (prefix_length > SIZE_MAX - path_length - 2U) return false;
+    total = prefix_length + path_length + 1U;
+    capacity = total > PATH_CAPACITY_INITIAL ? total : PATH_CAPACITY_INITIAL;
+    alignment = capacity % PATH_CAPACITY_ALIGNMENT;
+    if (alignment != PATH_CAPACITY_ALIGNMENT - 1U) {
+        if (capacity > SIZE_MAX - (PATH_CAPACITY_ALIGNMENT - alignment)) return false;
+        capacity += PATH_CAPACITY_ALIGNMENT - alignment;
+    }
+    created = path_alloc_calloc(1U, sizeof(*created));
+    if (created == NULL) return false;
+    created->buffer = path_alloc_calloc(capacity + 1U, sizeof(char));
+    if (created->buffer == NULL) {
+        path_alloc_free(created);
+        return false;
+    }
+    memcpy(created->buffer, prefix, prefix_length);
+    if (prefix_length > 0U && prefix[prefix_length - 1U] == '/') {
+        root_offset = prefix_length - 1U;
+    } else {
+        root_offset = prefix_length;
+        created->buffer[prefix_length++] = '/';
+    }
+    memcpy(created->buffer + prefix_length, string + path_offset, path_length + 1U);
+    created->capacity = capacity;
+    created->root = created->buffer + root_offset;
+    *out = created;
+    return true;
+}
+
 /**
  * @brief Free the memory allocated for the path structure.
  * 
@@ -91,8 +207,8 @@ path_t *path_init (const char *prefix, char *string) {
  */
 void path_free (path_t *path) {
     if (path != NULL) {
-        free(path->buffer);
-        free(path);
+        path_alloc_free(path->buffer);
+        path_alloc_free(path);
     }
 }
 
@@ -106,6 +222,17 @@ path_t *path_clone (path_t *path) {
     path_t *cloned = path_create(path->buffer);
     cloned->root = cloned->buffer + (path->root - path->buffer);
     return cloned;
+}
+
+bool path_try_clone(path_t **out, const path_t *source) {
+    ptrdiff_t root_offset;
+    if (out == NULL) return false;
+    *out = NULL;
+    if (source == NULL || source->buffer == NULL || source->root == NULL ||
+        source->root < source->buffer) return false;
+    root_offset = source->root - source->buffer;
+    if ((size_t)root_offset > strlen(source->buffer)) return false;
+    return path_try_create(out, source->buffer, (size_t)root_offset);
 }
 
 /**

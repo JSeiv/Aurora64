@@ -36,6 +36,9 @@ path_t *path_create(const char *string);
  */
 path_t *path_init(const char *prefix, char *string);
 
+/** Atomically construct a path. On failure, *out is NULL. */
+bool path_try_init(path_t **out, const char *prefix, const char *path);
+
 /**
  * @brief Free a path object
  * 
@@ -50,6 +53,15 @@ void path_free(path_t *path);
  * @return path_t* Pointer to the cloned path object
  */
 path_t *path_clone(path_t *string);
+
+/** Atomically clone a path. On failure, *out is NULL. */
+bool path_try_clone(path_t **out, const path_t *source);
+
+#ifdef PATH_HOST_TEST
+void path_host_test_fail_after(size_t successful_allocations);
+void path_host_test_reset(void);
+size_t path_host_test_live_allocations(void);
+#endif
 
 /**
  * @brief Clone a path object and push a string onto it

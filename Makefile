@@ -9,9 +9,25 @@ BUILD_DIR = build
 OUTPUT_DIR = output
 
 MENU_VERSION ?= "Preview release"
+AURORA64_HOME ?= 0
+AURORA64_LAUNCH_PROOF ?= 0
+AURORA64_LIBRARY_ORIGIN := $(origin AURORA64_LIBRARY)
+ifeq ($(AURORA64_LIBRARY_ORIGIN),undefined)
+AURORA64_LIBRARY := $(if $(filter 1,$(AURORA64_LAUNCH_PROOF)),1,0)
+endif
+AURORA64_LIBRARY_TIMING ?= 0
 BUILD_TIMESTAMP = "$(shell TZ='UTC' date "+%Y-%m-%d %H:%M:%S %:z")"
 
+HOST_TEST_GOALS := host-test host-test-sanitize
+ifneq ($(strip $(MAKECMDGOALS)),)
+ifeq ($(strip $(filter-out $(HOST_TEST_GOALS),$(MAKECMDGOALS))),)
+SKIP_N64_MK := 1
+endif
+endif
+
+ifndef SKIP_N64_MK
 include $(N64_INST)/include/n64.mk
+endif
 
 N64_ROM_SAVETYPE = none
 N64_ROM_RTC = 1
@@ -19,6 +35,10 @@ N64_ROM_REGIONFREE = 1
 N64_ROM_REGION = E
 
 N64_CFLAGS += -iquote $(SOURCE_DIR) -iquote $(ASSETS_DIR) -I $(SOURCE_DIR)/libs -isystem $(SOURCE_DIR)/libs/miniz -flto=auto $(FLAGS)
+N64_CFLAGS += -DFEATURE_AURORA_HOME_ENABLED=$(AURORA64_HOME)
+N64_CFLAGS += -DFEATURE_AURORA_LAUNCH_PROOF_ENABLED=$(AURORA64_LAUNCH_PROOF)
+N64_CFLAGS += -DFEATURE_AURORA_LIBRARY_ENABLED=$(AURORA64_LIBRARY)
+N64_CFLAGS += -DFEATURE_AURORA_LIBRARY_TIMING_ENABLED=$(AURORA64_LIBRARY_TIMING)
 
 SRCS = \
 	main.c \
@@ -52,6 +72,14 @@ SRCS = \
 	menu/path.c \
 	menu/png_decoder.c \
 	menu/rom_info.c \
+	menu/library/rom_header.c \
+	menu/library/sha256.c \
+	menu/library/rom_identity.c \
+	menu/library/library_roots.c \
+	menu/library/library_fs_libdragon.c \
+	menu/library/library_scanner.c \
+	menu/library/library_snapshot.c \
+	menu/library/library_service.c \
 	menu/settings.c \
 	menu/sound.c \
 	menu/ui_components/background.c \
@@ -70,6 +98,8 @@ SRCS = \
 	menu/views/fault.c \
 	menu/views/file_info.c \
 	menu/views/history_favorites.c \
+	menu/views/home.c \
+	menu/views/all_games.c \
 	menu/views/image_viewer.c \
 	menu/views/text_viewer.c \
 	menu/views/load_disk.c \
@@ -210,8 +240,19 @@ else
 endif
 .PHONY: run-debug-upload
 
-# test:
-#   TODO: run tests
+host-test:
+	$(MAKE) -C tests test
+.PHONY: host-test
+
+host-test-sanitize:
+	$(MAKE) -C tests test-sanitize
+.PHONY: host-test-sanitize
+
+print-library-config:
+	@printf 'home=%s library=%s launch_proof=%s library_origin=%s\n' \
+		'$(AURORA64_HOME)' '$(AURORA64_LIBRARY)' '$(AURORA64_LAUNCH_PROOF)' \
+		'$(AURORA64_LIBRARY_ORIGIN)'
+.PHONY: print-library-config
 
 .FORCE:
 

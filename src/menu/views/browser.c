@@ -474,6 +474,11 @@ static component_context_menu_t archive_context_menu = {
 
 static void set_menu_next_mode (menu_t *menu, void *arg) {
     menu_mode_t next_mode = (menu_mode_t) (arg);
+
+    if (next_mode == MENU_MODE_CREDITS) {
+        menu->credits.return_mode = MENU_MODE_BROWSER;
+    }
+
     menu->next_mode = next_mode;
 }
 
@@ -573,6 +578,11 @@ static void process (menu_t *menu) {
             menu_show_error(menu, "Couldn't open last directory");
         }
         sound_play_effect(SFX_EXIT);
+#if FEATURE_AURORA_HOME_ENABLED
+    } else if (menu->actions.back && path_is_root(menu->browser.directory)) {
+        sound_play_effect(SFX_EXIT);
+        menu->next_mode = MENU_MODE_HOME;
+#endif
     } else if (menu->actions.options && menu->browser.entry) {
         ui_components_context_menu_show(menu->browser.archive ? &archive_context_menu : &entry_context_menu);
         sound_play_effect(SFX_SETTING);
@@ -614,13 +624,28 @@ static void draw (menu_t *menu, surface_t *d) {
         }
     }
 
+    const char *back_action;
+    menu_font_style_t back_style;
+#if FEATURE_AURORA_HOME_ENABLED
+    if (path_is_root(menu->browser.directory)) {
+        back_action = "B: Home";
+    } else {
+        back_action = "B: Back";
+    }
+    back_style = STL_DEFAULT;
+#else
+    back_action = "B: Back";
+    back_style = path_is_root(menu->browser.directory) ? STL_GRAY : STL_DEFAULT;
+#endif
+
     ui_components_actions_bar_text_draw(
         STL_DEFAULT,
         ALIGN_LEFT, VALIGN_TOP,
         "%s\n"
-        "^%02XB: Back^00",
+        "^%02X%s^00",
         menu->browser.entries == 0 ? "" : action,
-        path_is_root(menu->browser.directory) ? STL_GRAY : STL_DEFAULT
+        (unsigned int) back_style,
+        back_action
     );
 
     ui_components_actions_bar_text_draw(

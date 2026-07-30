@@ -4,6 +4,19 @@
  * @ingroup menu
  */
 
+#ifdef MENU_TRANSITION_HOST_TEST
+#include <stdbool.h>
+#include <stddef.h>
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wstrict-prototypes"
+#endif
+#include "menu_state.h"
+#include "library/library_service.h"
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+#else
 #include <stdbool.h>
 #include <stdlib.h>
 #include <time.h>
@@ -17,6 +30,7 @@
 #include "hdmi.h"
 #include "menu_state.h"
 #include "menu.h"
+#include "library/library_service.h"
 #include "mp3_player.h"
 #include "png_decoder.h"
 #include "settings.h"
@@ -24,6 +38,195 @@
 #include "usb_comm.h"
 #include "utils/fs.h"
 #include "views/views.h"
+#endif
+
+
+typedef enum {
+    MENU_LIBRARY_ACTION_NONE = 0,
+    MENU_LIBRARY_ACTION_ROM,
+    MENU_LIBRARY_ACTION_DISK,
+    MENU_LIBRARY_ACTION_EMULATOR,
+    MENU_LIBRARY_ACTION_USB_REBOOT,
+} menu_library_action_t;
+
+typedef struct {
+    menu_t *owner;
+    menu_mode_t details_destination;
+    menu_library_action_t action;
+    bool details_pending;
+    bool details_released;
+    bool handoff_started;
+    bool cancelled_library_launch;
+} menu_library_transition_t;
+
+static menu_library_transition_t menu_library_transition;
+
+void menu_library_transition_reset(menu_t *owner)
+{
+    menu_library_transition.owner = owner;
+    menu_library_transition.details_destination = MENU_MODE_NONE;
+    menu_library_transition.action = MENU_LIBRARY_ACTION_NONE;
+    menu_library_transition.details_pending = false;
+    menu_library_transition.details_released = false;
+    menu_library_transition.handoff_started = false;
+    menu_library_transition.cancelled_library_launch = false;
+}
+
+static void menu_library_bind(menu_t *owner)
+{
+    if (menu_library_transition.owner != owner)
+        menu_library_transition_reset(owner);
+}
+
+static bool menu_library_action_begin(menu_t *owner,
+                                      menu_library_action_t action)
+{
+    menu_library_bind(owner);
+    if (owner == NULL) return false;
+    if (menu_library_transition.action != MENU_LIBRARY_ACTION_NONE &&
+        menu_library_transition.action != action) return false;
+    if (menu_library_transition.action == MENU_LIBRARY_ACTION_NONE) {
+        menu_library_transition.action = action;
+        if (owner->library_service != NULL)
+            library_service_request_cancel(owner->library_service);
+    }
+    return true;
+}
+
+static bool menu_library_action_ready(menu_t *owner,
+                                      menu_library_action_t action)
+{
+    if (!menu_library_action_begin(owner, action)) return false;
+    return owner->library_service == NULL ||
+        library_service_is_quiesced(owner->library_service);
+}
+
+bool menu_library_rom_cancel_started(menu_t *owner)
+{
+    menu_library_bind(owner);
+    return owner != NULL &&
+        menu_library_transition.action == MENU_LIBRARY_ACTION_ROM;
+}
+
+void menu_library_rom_cancel(menu_t *owner)
+{
+    if (menu_library_action_begin(owner, MENU_LIBRARY_ACTION_ROM) &&
+        owner->load.return_mode == MENU_MODE_LIBRARY)
+        menu_library_transition.cancelled_library_launch = true;
+}
+
+bool menu_library_rom_ready(menu_t *owner)
+{
+    menu_library_bind(owner);
+    return owner != NULL &&
+        menu_library_transition.action == MENU_LIBRARY_ACTION_ROM &&
+        (owner->library_service == NULL ||
+         library_service_is_quiesced(owner->library_service));
+}
+
+bool menu_library_disk_ready(menu_t *owner)
+{
+    return menu_library_action_ready(owner, MENU_LIBRARY_ACTION_DISK);
+}
+
+bool menu_library_emulator_ready(menu_t *owner)
+{
+    return menu_library_action_ready(owner, MENU_LIBRARY_ACTION_EMULATOR);
+}
+
+bool menu_library_usb_reboot_ready(menu_t *owner)
+{
+    return menu_library_action_ready(owner, MENU_LIBRARY_ACTION_USB_REBOOT);
+}
+
+void menu_library_handoff_begin(menu_t *owner)
+{
+    menu_library_bind(owner);
+    menu_library_transition.handoff_started = true;
+}
+
+bool menu_library_handoff_started(menu_t *owner)
+{
+    menu_library_bind(owner);
+    return owner != NULL && menu_library_transition.handoff_started;
+}
+
+void menu_library_action_failed(menu_t *owner)
+{
+    menu_library_bind(owner);
+    menu_library_transition.action = MENU_LIBRARY_ACTION_NONE;
+    menu_library_transition.handoff_started = false;
+}
+
+bool menu_library_pause_to(menu_t *owner, menu_mode_t destination)
+{
+    menu_library_bind(owner);
+    if (owner == NULL) return false;
+    if (menu_library_transition.details_released &&
+        menu_library_transition.details_destination == destination) return true;
+    if (!menu_library_transition.details_pending) {
+        menu_library_transition.details_destination = destination;
+        menu_library_transition.details_pending = true;
+        if (owner->library_service != NULL)
+            library_service_request_pause(owner->library_service);
+    }
+    owner->next_mode = owner->mode;
+    if (owner->library_service != NULL &&
+        !library_service_is_quiesced(owner->library_service)) return false;
+    menu_library_transition.details_pending = false;
+    menu_library_transition.details_released = true;
+    owner->next_mode = menu_library_transition.details_destination;
+    if (owner->library_service != NULL &&
+        (owner->next_mode == MENU_MODE_HOME ||
+         owner->next_mode == MENU_MODE_LIBRARY))
+        library_service_resume(owner->library_service);
+    return true;
+}
+
+void menu_library_coordinate_frame(menu_t *owner)
+{
+    menu_library_bind(owner);
+    if (owner == NULL) return;
+    if (menu_library_transition.handoff_started) return;
+    if (owner->mode == MENU_MODE_ERROR &&
+        owner->next_mode == MENU_MODE_LIBRARY &&
+        menu_library_transition.cancelled_library_launch) {
+        if (owner->library_service != NULL)
+            library_service_restart(owner->library_service);
+        menu_library_transition.cancelled_library_launch = false;
+        return;
+    }
+    if (menu_library_transition.details_released) {
+        if (owner->mode == MENU_MODE_LOAD_ROM &&
+            owner->next_mode == menu_library_transition.details_destination)
+            return;
+        menu_library_transition.details_released = false;
+    }
+    if (menu_library_transition.details_pending) {
+        (void)menu_library_pause_to(
+            owner, menu_library_transition.details_destination);
+        return;
+    }
+    (void)library_service_coordinate_transition(
+        owner->library_service, owner->mode, &owner->next_mode);
+}
+
+bool menu_library_teardown(menu_t *owner, size_t poll_limit)
+{
+    size_t poll_count;
+    menu_library_bind(owner);
+    if (owner == NULL || owner->library_service == NULL) return true;
+    library_service_request_cancel(owner->library_service);
+    for (poll_count = 0U; poll_count < poll_limit &&
+         !library_service_is_quiesced(owner->library_service); ++poll_count)
+        library_service_poll(owner->library_service, MENU_MODE_BOOT);
+    if (!library_service_is_quiesced(owner->library_service)) return false;
+    library_service_free(owner->library_service);
+    owner->library_service = NULL;
+    return true;
+}
+
+#ifndef MENU_TRANSITION_HOST_TEST
 
 #define MENU_DIRECTORY              "/menu"
 #define MENU_SETTINGS_FILE          "config.ini"
@@ -34,10 +237,47 @@
 #define BACKGROUND_CACHE_FILE       "background.data"
 
 #define FPS_LIMIT                   (30.0f)
+#define LIBRARY_DRAIN_GUARD         20000U
+
+#ifndef FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+#define FEATURE_AURORA_LIBRARY_TIMING_ENABLED 0
+#endif
+
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+typedef struct {
+    uint32_t last_service_poll;
+    uint32_t last_usb_poll;
+    uint32_t max_service_gap;
+    uint32_t max_service_duration;
+    uint32_t max_usb_gap;
+} library_timing_t;
+
+static library_timing_t library_timing;
+
+static void library_timing_record_gap(const char *name, uint32_t *last,
+                                      uint32_t *maximum)
+{
+    uint32_t now = TICKS_READ();
+    uint32_t gap;
+    if (*last == 0U) {
+        *last = now;
+        return;
+    }
+    gap = (uint32_t)TICKS_DISTANCE(*last, now);
+    *last = now;
+    if (gap > *maximum) {
+        *maximum = gap;
+        debugf("[LIBRARY TIMING] max %s: %lu us\n", name,
+               (unsigned long)TICKS_TO_US(gap));
+    }
+}
+#endif
 
 static menu_t *menu;
 
 static bool interlaced = true;
+
+void usb_comm_transition_reset(void);
 
 /**
  * @brief Initialize the menu system.
@@ -47,6 +287,8 @@ static bool interlaced = true;
 static void menu_init (boot_params_t *boot_params) {    
     menu = calloc(1, sizeof(menu_t));
     assert(menu != NULL);
+    menu_library_transition_reset(menu);
+    usb_comm_transition_reset();
 
     menu->boot_params = boot_params;
 
@@ -87,7 +329,23 @@ static void menu_init (boot_params_t *boot_params) {
     menu->load.load_favorite_id = -1;
     path_pop(path);
 
-    // Force interlacing off in VI settings for TVs and other devices that struggle with interlaced video input.
+    library_service_config_t library_config = {
+        .fs = NULL,
+        .roots = library_roots_default(),
+        .budget = {
+            .max_directory_entries = 8U,
+            .max_read_bytes = 4096U,
+            .max_ticks = TICKS_FROM_MS(10U),
+        },
+        .allocator = NULL,
+        .storage_prefix = menu->storage_prefix,
+    };
+    if (menu->flashcart_err == FLASHCART_OK &&
+        !library_service_init(&menu->library_service, &library_config)) {
+        menu->next_mode = MENU_MODE_FAULT;
+    }
+
+    // Force interlacing off
     interlaced = !menu->settings.force_progressive_scan;
 
     resolution_t resolution = {
@@ -140,14 +398,23 @@ static void menu_init (boot_params_t *boot_params) {
  * 
  * @param menu Pointer to the menu structure.
  */
-static void menu_deinit (menu_t *menu) {
+static bool menu_deinit (menu_t *menu) {
+    if (!menu_library_teardown(menu, LIBRARY_DRAIN_GUARD)) return false;
+
     ui_components_background_free();
     rspq_wait();  // Execute deferred callbacks (e.g., display list freeing) before closing RSPQ
 
     hdmi_send_game_id(menu->boot_params);
 
-    path_free(menu->load.disk_slots.primary.disk_path);
+    rom_info_free_meta(&menu->load.rom_info);
     path_free(menu->load.rom_path);
+    menu->load.rom_path = NULL;
+    path_free(menu->load.pending_rom_path);
+    menu->load.pending_rom_path = NULL;
+    menu->load.pending_rom_path_set = false;
+    menu->load_pending.rom_file = false;
+
+    path_free(menu->load.disk_slots.primary.disk_path);
     for (int i = 0; i < menu->browser.entries; i++) {
         free(menu->browser.list[i].name);
     }
@@ -167,6 +434,7 @@ static void menu_deinit (menu_t *menu) {
     joypad_close();
 
     flashcart_deinit();
+    return true;
 }
 
 /**
@@ -180,6 +448,8 @@ typedef const struct {
 
 static view_t menu_views[] = {
     { MENU_MODE_STARTUP, view_startup_init, view_startup_display },
+    { MENU_MODE_HOME, view_home_init, view_home_display },
+    { MENU_MODE_LIBRARY, view_all_games_init, view_all_games_display },
     { MENU_MODE_BROWSER, view_browser_init, view_browser_display },
     { MENU_MODE_FILE_INFO, view_file_info_init, view_file_info_display },
     { MENU_MODE_SYSTEM_INFO, view_system_info_init, view_system_info_display },
@@ -228,6 +498,11 @@ void menu_run (boot_params_t *boot_params) {
     menu_init(boot_params);
 
     while (true) {
+        if (menu_library_handoff_started(menu) &&
+            menu->next_mode == MENU_MODE_BOOT) {
+            menu->mode = MENU_MODE_BOOT;
+            break;
+        }
         surface_t *display = display_try_get();
 
         if (display != NULL) {
@@ -241,6 +516,32 @@ void menu_run (boot_params_t *boot_params) {
                 rdpq_detach_wait();
                 display_show(display);
             }
+
+            if (menu_library_handoff_started(menu)) {
+                if (menu->next_mode == MENU_MODE_BOOT) {
+                    menu->mode = MENU_MODE_BOOT;
+                    break;
+                }
+                menu_library_action_failed(menu);
+            }
+
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            library_timing_record_gap("service opportunity",
+                                      &library_timing.last_service_poll,
+                                      &library_timing.max_service_gap);
+            uint32_t library_poll_start = TICKS_READ();
+#endif
+            library_service_poll(menu->library_service, menu->mode);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            uint32_t library_poll_duration =
+                (uint32_t)TICKS_DISTANCE(library_poll_start, TICKS_READ());
+            if (library_poll_duration > library_timing.max_service_duration) {
+                library_timing.max_service_duration = library_poll_duration;
+                debugf("[LIBRARY TIMING] max service poll: %lu us\n",
+                       (unsigned long)TICKS_TO_US(library_poll_duration));
+            }
+#endif
+            menu_library_coordinate_frame(menu);
 
             if (menu->mode == MENU_MODE_BOOT) {
                 break;
@@ -262,12 +563,18 @@ void menu_run (boot_params_t *boot_params) {
 
         png_decoder_poll();
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        library_timing_record_gap("USB opportunity",
+                                  &library_timing.last_usb_poll,
+                                  &library_timing.max_usb_gap);
+#endif
         usb_comm_poll(menu);
     }
 
-    menu_deinit(menu);
+    if (!menu_deinit(menu)) abort();
 
     while (exception_reset_time() > 0) {
         // Do nothing if reset button was pressed
     }
 }
+#endif

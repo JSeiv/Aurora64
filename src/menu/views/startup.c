@@ -35,10 +35,19 @@ void view_startup_init (menu_t *menu) {
     if (menu->settings.first_run) {
         menu->settings.first_run = false;
         settings_save(&menu->settings);
+#if FEATURE_AURORA_HOME_ENABLED
+        menu->credits.return_mode = MENU_MODE_HOME;
+#else
+        menu->credits.return_mode = MENU_MODE_BROWSER;
+#endif
         menu->next_mode = MENU_MODE_CREDITS;
     }
     else {
+#if FEATURE_AURORA_HOME_ENABLED
+        menu->next_mode = MENU_MODE_HOME;
+#else
         menu->next_mode = MENU_MODE_BROWSER;
+#endif
     }
 }
 
