@@ -1,10 +1,24 @@
+#ifdef LOAD_EMULATOR_HOST_TEST
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wstrict-prototypes"
+#endif
+#include "../menu_state.h"
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+#else
 #include "../cart_load.h"
 #include "boot/boot.h"
 #include "utils/fs.h"
 #include "../sound.h"
 #include "views.h"
+#endif
 
+bool menu_library_emulator_ready(menu_t *menu);
+void menu_library_handoff_begin(menu_t *menu);
 
+#ifndef LOAD_EMULATOR_HOST_TEST
 static const char *emu_nes_rom_extensions[] = { "nes", NULL };
 static const char *emu_snes_rom_extensions[] = { "sfc", "smc", NULL };
 static const char *emu_gameboy_rom_extensions[] = { "gb", NULL };
@@ -94,7 +108,21 @@ static void draw_progress (float progress) {
         rdpq_detach_show();
     }
 }
+#endif
 
+#ifdef LOAD_EMULATOR_HOST_TEST
+static void (*host_load_emulator)(menu_t *menu);
+
+void view_load_emulator_host_set_loader(void (*callback)(menu_t *menu))
+{
+    host_load_emulator = callback;
+}
+
+static void load(menu_t *menu)
+{
+    if (host_load_emulator != NULL) host_load_emulator(menu);
+}
+#else
 static void load (menu_t *menu) {
     cart_load_err_t err = cart_load_emulator(menu, emu_type, draw_progress);
 
@@ -109,7 +137,25 @@ static void load (menu_t *menu) {
     menu->boot_params->detect_cic_seed = true;
     menu->boot_params->cheat_list = NULL;
 }
+#endif
 
+static void stage_pending_emulator(menu_t *menu)
+{
+    if (!menu->load_pending.emulator_file ||
+        !menu_library_emulator_ready(menu)) return;
+    menu_library_handoff_begin(menu);
+    menu->load_pending.emulator_file = false;
+    load(menu);
+}
+
+#ifdef LOAD_EMULATOR_HOST_TEST
+void view_load_emulator_host_stage_pending(menu_t *menu)
+{
+    stage_pending_emulator(menu);
+}
+#endif
+
+#ifndef LOAD_EMULATOR_HOST_TEST
 
 void view_load_emulator_init (menu_t *menu) {
     menu->load_pending.emulator_file = false;
@@ -140,8 +186,6 @@ void view_load_emulator_display (menu_t *menu, surface_t *display) {
 
     draw(menu, display);
 
-    if (menu->load_pending.emulator_file) {
-        menu->load_pending.emulator_file = false;
-        load(menu);
-    }
+    stage_pending_emulator(menu);
 }
+#endif

@@ -76,6 +76,16 @@ static bool safe_mode(menu_mode_t mode)
     return mode == MENU_MODE_HOME || mode == MENU_MODE_LIBRARY;
 }
 
+static void reset_transition_state(library_service_t *service)
+{
+    service->transition_destination = MENU_MODE_NONE;
+    service->released_origin = MENU_MODE_NONE;
+    service->released_destination = MENU_MODE_NONE;
+    service->transition_pending = false;
+    service->transition_released = false;
+    service->resume_after_transition = false;
+}
+
 static bool ensure_adapter(library_service_t *service)
 {
     if (!service->owns_fs || service->adapter_ready) return true;
@@ -206,10 +216,10 @@ void library_service_resume(library_service_t *service)
 void library_service_request_cancel(library_service_t *service)
 {
     if (service == NULL) return;
+    reset_transition_state(service);
     service->start_requested = false;
     service->resume_requested = false;
     service->pause_requested = false;
-    service->resume_after_transition = false;
     service->suppress_start = true;
     service->paused = false;
     if (service->scanner == NULL && service->builder == NULL &&
@@ -226,6 +236,7 @@ void library_service_request_cancel(library_service_t *service)
 void library_service_restart(library_service_t *service)
 {
     if (service == NULL) return;
+    reset_transition_state(service);
     service->resume_requested = false;
     service->pause_requested = false;
     service->paused = false;

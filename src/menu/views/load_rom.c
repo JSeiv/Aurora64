@@ -35,6 +35,12 @@ void menu_show_error_context(menu_t *menu, char *error_message,
 #endif
 #endif
 
+bool menu_library_rom_cancel_started(menu_t *menu);
+void menu_library_rom_cancel(menu_t *menu);
+bool menu_library_rom_ready(menu_t *menu);
+void menu_library_handoff_begin(menu_t *menu);
+bool menu_library_pause_to(menu_t *menu, menu_mode_t destination);
+
 #ifndef LOAD_ROM_HOST_TEST
 static bool show_extra_info_message = false;
 static bool show_advanced_info_message = false;
@@ -505,7 +511,8 @@ static void process (menu_t *menu) {
         menu->load_pending.rom_file = true;
     } else if (menu->actions.back) {
         sound_play_effect(SFX_EXIT);
-        menu->next_mode = validate_return_mode(menu->load.return_mode);
+        (void)menu_library_pause_to(menu,
+            validate_return_mode(menu->load.return_mode));
     } else if (menu->actions.options) {
         ui_components_context_menu_show(&options_context_menu);
         sound_play_effect(SFX_SETTING);
@@ -722,10 +729,6 @@ static bool validate_library_source(menu_t *menu);
 static void load (menu_t *menu) {
     debugf("Load ROM: load function called\n");
     cart_load_err_t err;
-    if (!validate_library_source(menu)) {
-        show_details_error(menu, "Indexed ROM changed or is no longer available");
-        return;
-    }
 #ifdef LOAD_ROM_HOST_TEST
     err = host_cart_load == NULL ? CART_LOAD_ERR_ROM_LOAD_FAIL : host_cart_load(menu);
 #else
@@ -1341,7 +1344,18 @@ void view_load_rom_display (menu_t *menu, surface_t *display) {
     if (menu->actions.enter) menu->load_pending.rom_file = true;
 #endif
 
-    if (menu->load_pending.rom_file) {
+    if (menu->load_pending.rom_file &&
+        !menu_library_rom_cancel_started(menu)) {
+        if (!validate_library_source(menu)) {
+            menu->load_pending.rom_file = false;
+            show_details_error(menu,
+                "Indexed ROM changed or is no longer available");
+        } else {
+            menu_library_rom_cancel(menu);
+        }
+    }
+    if (menu->load_pending.rom_file && menu_library_rom_ready(menu)) {
+        menu_library_handoff_begin(menu);
         menu->load_pending.rom_file = false;
         load(menu);
     }

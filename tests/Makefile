@@ -29,8 +29,15 @@ TASK10_TEST_BINARY ?= $(BUILD_DIR)/task10_tests
 SANITIZE_TASK10_TEST_BINARY := $(SANITIZE_BUILD_DIR)/task10_tests
 TASK10_SOURCES := test_error_context.c ../src/menu/path.c ../src/menu/views/error.c \
 	../src/menu/library/rom_header.c
+TASK11_TEST_BINARY ?= $(BUILD_DIR)/task11_tests
+SANITIZE_TASK11_TEST_BINARY := $(SANITIZE_BUILD_DIR)/task11_tests
+TASK11_MENU_OBJECT = $(dir $(TASK11_TEST_BINARY))menu_transition_host.o
+TASK11_DISK_OBJECT = $(dir $(TASK11_TEST_BINARY))load_disk_host.o
+TASK11_EMULATOR_OBJECT = $(dir $(TASK11_TEST_BINARY))load_emulator_host.o
+TASK11_USB_OBJECT = $(dir $(TASK11_TEST_BINARY))usb_comm_host.o
+TASK10_STUB_OBJECT = $(dir $(TASK10_TEST_BINARY))task11_task10_stubs.o
 
-.PHONY: test test-sanitize test-compat-flags clean force-test-build
+.PHONY: test test-sanitize test-task10 test-task11 test-compat-flags clean force-test-build
 
 define assert-library-config
 	@actual="$$($(MAKE) -s --no-print-directory -f ../Makefile SKIP_N64_MK=1 $(1) print-library-config)"; \
@@ -42,9 +49,16 @@ define assert-library-config
 	fi
 endef
 
-test: test-compat-flags $(TEST_BINARY) $(TASK10_TEST_BINARY)
-	./$(TEST_BINARY)
-	./$(TASK10_TEST_BINARY)
+test: test-compat-flags $(TEST_BINARY) $(TASK10_TEST_BINARY) $(TASK11_TEST_BINARY)
+	$(TEST_BINARY)
+	$(TASK10_TEST_BINARY)
+	$(TASK11_TEST_BINARY)
+
+test-task10: $(TASK10_TEST_BINARY)
+	$(TASK10_TEST_BINARY)
+
+test-task11: $(TASK11_TEST_BINARY)
+	$(TASK11_TEST_BINARY)
 
 test-compat-flags:
 	$(call assert-library-config,,home=0 library=0 launch_proof=0 library_origin=undefined,default)
@@ -62,16 +76,54 @@ $(LOAD_ROM_OBJECT): ../src/menu/views/load_rom.c
 		-DFEATURE_AURORA_HOME_ENABLED=1 -DFEATURE_AURORA_LIBRARY_ENABLED=1 \
 		-I../src -I../src/libs -I../src/libs/acutest -isystem ../src/libs/miniz -isystem ../libdragon/include -I. -c $< -o $@
 
-$(TASK10_TEST_BINARY): force-test-build $(TASK10_SOURCES) $(LOAD_ROM_OBJECT) ../src/libs/acutest/acutest.h
+$(TASK10_STUB_OBJECT): test_library_transition_guard.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -DTASK11_STUBS_ONLY -DTASK10_LINK \
+		-I../src -I../src/libs -isystem ../src/libs/miniz -isystem ../libdragon/include -I. -c $< -o $@
+
+$(TASK10_TEST_BINARY): force-test-build $(TASK10_SOURCES) $(LOAD_ROM_OBJECT) $(TASK11_MENU_OBJECT) $(TASK10_STUB_OBJECT) ../src/libs/acutest/acutest.h
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -I../src -I../src/libs \
 		-I../src/libs/acutest -isystem ../src/libs/miniz -isystem ../libdragon/include -I. \
-		$(TASK10_SOURCES) $(LOAD_ROM_OBJECT) $(LDFLAGS) $(HOST_SECTION_GC) -o $@
+		$(TASK10_SOURCES) $(LOAD_ROM_OBJECT) $(TASK11_MENU_OBJECT) $(TASK10_STUB_OBJECT) $(LDFLAGS) $(HOST_SECTION_GC) -o $@
+
+$(TASK11_MENU_OBJECT): ../src/menu/menu.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -DMENU_TRANSITION_HOST_TEST \
+		-I../src -I../src/libs -isystem ../src/libs/miniz -isystem ../libdragon/include -I. -c $< -o $@
+
+$(TASK11_DISK_OBJECT): ../src/menu/views/load_disk.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -DLOAD_DISK_HOST_TEST \
+		-I../src -I../src/libs -isystem ../src/libs/miniz -isystem ../libdragon/include -I. -c $< -o $@
+
+$(TASK11_EMULATOR_OBJECT): ../src/menu/views/load_emulator.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -DLOAD_EMULATOR_HOST_TEST \
+		-I../src -I../src/libs -isystem ../src/libs/miniz -isystem ../libdragon/include -I. -c $< -o $@
+
+$(TASK11_USB_OBJECT): ../src/menu/usb_comm.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -DUSB_COMM_HOST_TEST \
+		-I../src -I../src/libs -isystem ../src/libs/miniz -isystem ../libdragon/include -I. -c $< -o $@
+
+$(TASK11_TEST_BINARY): force-test-build test_library_transition_guard.c $(TASK11_MENU_OBJECT) \
+		$(LOAD_ROM_OBJECT) $(TASK11_DISK_OBJECT) $(TASK11_EMULATOR_OBJECT) \
+		$(TASK11_USB_OBJECT) ../src/menu/path.c ../src/menu/library/rom_header.c \
+		../src/libs/acutest/acutest.h
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -I../src -I../src/libs \
+		-I../src/libs/acutest -isystem ../src/libs/miniz -isystem ../libdragon/include -I. \
+		test_library_transition_guard.c $(TASK11_MENU_OBJECT) $(LOAD_ROM_OBJECT) \
+		$(TASK11_DISK_OBJECT) $(TASK11_EMULATOR_OBJECT) $(TASK11_USB_OBJECT) \
+		../src/menu/path.c ../src/menu/library/rom_header.c \
+		$(LDFLAGS) $(HOST_SECTION_GC) -o $@
 
 test-sanitize:
-	rm -rf $(SANITIZE_BUILD_DIR)
+	@mkdir -p $(SANITIZE_BUILD_DIR)
 	$(MAKE) test TEST_BINARY="$(SANITIZE_TEST_BINARY)" \
 		TASK10_TEST_BINARY="$(SANITIZE_TASK10_TEST_BINARY)" \
+		TASK11_TEST_BINARY="$(SANITIZE_TASK11_TEST_BINARY)" \
 		CFLAGS="$(CFLAGS) $(SANITIZE_FLAGS)" LDFLAGS="$(LDFLAGS) $(SANITIZE_FLAGS)"
 
 force-test-build:

@@ -1,3 +1,13 @@
+#ifdef LOAD_DISK_HOST_TEST
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wstrict-prototypes"
+#endif
+#include "../menu_state.h"
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+#else
 #include "../cart_load.h"
 #include "../disk_info.h"
 #include "boot/boot.h"
@@ -5,7 +15,12 @@
 #include "views.h"
 #include "../bookkeeping.h"
 #include <string.h>
+#endif
 
+bool menu_library_disk_ready(menu_t *menu);
+void menu_library_handoff_begin(menu_t *menu);
+
+#ifndef LOAD_DISK_HOST_TEST
 #define DISK_SLOTS_MAX 3 // Maximum number of disk slots supported (excluding the primary disk)
 
 static component_boxart_t *boxart;
@@ -255,7 +270,21 @@ static void draw_progress (float progress) {
         rdpq_detach_show();
     }
 }
+#endif
 
+#ifdef LOAD_DISK_HOST_TEST
+static void (*host_load_disk)(menu_t *menu);
+
+void view_load_disk_host_set_loader(void (*callback)(menu_t *menu))
+{
+    host_load_disk = callback;
+}
+
+static void load(menu_t *menu)
+{
+    if (host_load_disk != NULL) host_load_disk(menu);
+}
+#else
 static void load (menu_t *menu) {
     cart_load_err_t err;
 
@@ -293,7 +322,24 @@ static void load (menu_t *menu) {
         menu->boot_params->cheat_list = NULL;
     }
 }
+#endif
 
+static void stage_pending_disk(menu_t *menu)
+{
+    if (!menu->load_pending.disk_file || !menu_library_disk_ready(menu)) return;
+    menu_library_handoff_begin(menu);
+    menu->load_pending.disk_file = false;
+    load(menu);
+}
+
+#ifdef LOAD_DISK_HOST_TEST
+void view_load_disk_host_stage_pending(menu_t *menu)
+{
+    stage_pending_disk(menu);
+}
+#endif
+
+#ifndef LOAD_DISK_HOST_TEST
 static void deinit (void) {
     ui_components_boxart_free(boxart);
 }
@@ -389,12 +435,10 @@ void view_load_disk_display (menu_t *menu, surface_t *display) {
 
     draw(menu, display);
 
-    if (menu->load_pending.disk_file) {
-        menu->load_pending.disk_file = false;
-        load(menu);
-    }
+    stage_pending_disk(menu);
 
     if (menu->next_mode != MENU_MODE_LOAD_DISK) {
         deinit();
     }
 }
+#endif

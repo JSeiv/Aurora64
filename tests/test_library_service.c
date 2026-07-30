@@ -625,10 +625,94 @@ static void exercise_transition(service_fixture_t *fixture, menu_mode_t current,
     TEST_CHECK(requested == destination);
 }
 
+static void exercise_stale_release_is_invalidated_on_restart(void)
+{
+    service_fixture_t fixture;
+    menu_mode_t requested;
+    bool ready;
+    size_t guard;
+
+    fixture_init(&fixture, true);
+    for (guard = 0U; guard < SERVICE_GUARD &&
+         fixture.fs.fake.active_dir_handles == 0U; ++guard)
+        begin_poll(&fixture, MENU_MODE_LIBRARY);
+    TEST_ASSERT(fixture.fs.fake.active_dir_handles != 0U);
+
+    requested = MENU_MODE_LOAD_ROM;
+    ready = library_service_coordinate_transition(fixture.service,
+                                                  MENU_MODE_LIBRARY,
+                                                  &requested);
+    TEST_CHECK(!ready);
+    TEST_CHECK(requested == MENU_MODE_LIBRARY);
+    TEST_CHECK(!library_service_is_quiesced(fixture.service));
+
+    for (guard = 0U; guard < SERVICE_GUARD &&
+         !library_service_is_quiesced(fixture.service); ++guard) {
+        begin_poll(&fixture, MENU_MODE_LOAD_ROM);
+        requested = MENU_MODE_LOAD_ROM;
+        ready = library_service_coordinate_transition(fixture.service,
+                                                      MENU_MODE_LIBRARY,
+                                                      &requested);
+        if (!ready) TEST_CHECK(requested == MENU_MODE_LIBRARY);
+    }
+    TEST_ASSERT(guard < SERVICE_GUARD);
+    requested = MENU_MODE_LOAD_ROM;
+    ready = library_service_coordinate_transition(fixture.service,
+                                                  MENU_MODE_LIBRARY,
+                                                  &requested);
+    TEST_CHECK(ready);
+    TEST_CHECK(requested == MENU_MODE_LOAD_ROM);
+
+    library_service_request_cancel(fixture.service);
+    poll_until_quiesced(&fixture, MENU_MODE_BOOT);
+    library_service_restart(fixture.service);
+    for (guard = 0U; guard < SERVICE_GUARD &&
+         fixture.fs.fake.active_dir_handles == 0U; ++guard)
+        begin_poll(&fixture, MENU_MODE_LIBRARY);
+    TEST_ASSERT(fixture.fs.fake.active_dir_handles != 0U);
+    TEST_CHECK(!library_service_is_quiesced(fixture.service));
+
+    requested = MENU_MODE_LOAD_ROM;
+    ready = library_service_coordinate_transition(fixture.service,
+                                                  MENU_MODE_LIBRARY,
+                                                  &requested);
+    TEST_CHECK(!ready);
+    TEST_CHECK(requested == MENU_MODE_LIBRARY);
+    TEST_CHECK(!library_service_is_quiesced(fixture.service));
+
+    for (guard = 0U; guard < SERVICE_GUARD &&
+         !library_service_is_quiesced(fixture.service); ++guard) {
+        requested = MENU_MODE_LOAD_ROM;
+        ready = library_service_coordinate_transition(fixture.service,
+                                                      MENU_MODE_LIBRARY,
+                                                      &requested);
+        TEST_CHECK(!ready);
+        TEST_CHECK(requested == MENU_MODE_LIBRARY);
+        begin_poll(&fixture, MENU_MODE_LOAD_ROM);
+    }
+    TEST_ASSERT(guard < SERVICE_GUARD);
+    requested = MENU_MODE_LOAD_ROM;
+    ready = library_service_coordinate_transition(fixture.service,
+                                                  MENU_MODE_LIBRARY,
+                                                  &requested);
+    TEST_CHECK(ready);
+    TEST_CHECK(requested == MENU_MODE_LOAD_ROM);
+
+    requested = MENU_MODE_LOAD_ROM;
+    ready = library_service_coordinate_transition(fixture.service,
+                                                  MENU_MODE_LOAD_ROM,
+                                                  &requested);
+    TEST_CHECK(ready);
+    TEST_CHECK(requested == MENU_MODE_LOAD_ROM);
+    fixture_destroy(&fixture);
+}
+
 void test_library_service_transition_coordinator_defers_all_safe_exits(void)
 {
     service_fixture_t fixture;
     size_t guard;
+
+    exercise_stale_release_is_invalidated_on_restart();
 
     fixture_init(&fixture, true);
     for (guard = 0U; guard < SERVICE_GUARD && fixture.fs.fake.active_dir_handles == 0U; ++guard)

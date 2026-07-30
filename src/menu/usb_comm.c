@@ -8,6 +8,16 @@
 //       Main use of these functions is to aid menu development
 //       (for example replace files on the SD card or reboot menu).
 
+#ifdef USB_COMM_HOST_TEST
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wstrict-prototypes"
+#endif
+#include "menu_state.h"
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+#else
 #include <stdio.h>
 #include <string.h>
 
@@ -17,7 +27,19 @@
 #include "utils/utils.h"
 
 #define MAX_FILE_SIZE   MiB(4)
+#endif
 
+bool menu_library_usb_reboot_ready(menu_t *menu);
+void menu_library_handoff_begin(menu_t *menu);
+
+static bool reboot_pending;
+
+void usb_comm_transition_reset(void)
+{
+    reboot_pending = false;
+}
+
+#ifndef USB_COMM_HOST_TEST
 /** @brief The supported USB commands structure. */
 typedef struct {
     /** @brief The command identifier. */
@@ -84,6 +106,7 @@ static void usb_comm_send_error (const char *message) {
     usb_purge();
     usb_write(DATATYPE_TEXT, message, strlen(message));
 }
+#endif
 
 /**
  * @brief Reboot the system.
@@ -91,6 +114,21 @@ static void usb_comm_send_error (const char *message) {
  * @param menu Pointer to the menu structure.
  */
 static void command_reboot (menu_t *menu) {
+    (void)menu;
+    reboot_pending = true;
+}
+
+#ifdef USB_COMM_HOST_TEST
+void usb_comm_host_queue_reboot(menu_t *menu)
+{
+    command_reboot(menu);
+}
+#endif
+
+static void command_reboot_complete(menu_t *menu) {
+    if (!reboot_pending || !menu_library_usb_reboot_ready(menu)) return;
+    menu_library_handoff_begin(menu);
+    reboot_pending = false;
     menu->next_mode = MENU_MODE_BOOT;
 
     menu->boot_params->device_type = BOOT_DEVICE_TYPE_ROM;
@@ -99,9 +137,17 @@ static void command_reboot (menu_t *menu) {
     menu->boot_params->cheat_list = NULL;
 }
 
+#ifdef USB_COMM_HOST_TEST
+void usb_comm_host_complete_reboot(menu_t *menu)
+{
+    command_reboot_complete(menu);
+}
+#endif
+
+#ifndef USB_COMM_HOST_TEST
 /**
  * @brief Receive a file over USB and save it to the storage.
- * 
+
  * @param menu Pointer to the menu structure.
  */
 static void command_receive_file (menu_t *menu) {
@@ -168,7 +214,10 @@ static usb_comm_command_t commands[] = {
  * @param menu Pointer to the menu structure.
  */
 void usb_comm_poll (menu_t *menu) {
-    uint32_t header = usb_poll();
+    uint32_t header;
+
+    command_reboot_complete(menu);
+    header = usb_poll();
 
     if (USBHEADER_GETTYPE(header) != DATATYPE_TEXT) {
         usb_purge();
@@ -199,3 +248,4 @@ void usb_comm_poll (menu_t *menu) {
         }
     }
 }
+#endif
