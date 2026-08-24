@@ -473,6 +473,48 @@ void library_view_model_step(library_view_menu_t *menu)
 _Static_assert(sizeof(((menu_t *)0)->library_view) == 84U,
                "library view state must remain bounded by-value state");
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+static bool layer1_record_trace_event(library_metrics_event_t event)
+{
+    uint32_t transition_id;
+    uint32_t generation;
+
+    if (!library_metrics_trace_context(&transition_id, &generation))
+        return false;
+    return library_metrics_trace_record(event, transition_id, generation);
+}
+
+static bool layer1_event_recorded(library_metrics_event_t event)
+{
+    library_metrics_snapshot_t snapshot;
+    uint8_t bit = (uint8_t)(1U << (unsigned int)event);
+
+    library_metrics_snapshot(&snapshot);
+    return (snapshot.trace.valid_mask & bit) != 0U;
+}
+
+static void draw_layer1_overlay(void)
+{
+    library_metrics_overlay_t overlay;
+    rdpq_textparms_t parms = {
+        .width = 536, .height = 12, .align = ALIGN_LEFT,
+        .valign = VALIGN_TOP, .wrap = WRAP_NONE
+    };
+    size_t row;
+
+    if (library_metrics_critical_interval_active()) return;
+    library_metrics_heap_sample_current(
+        LIBRARY_METRICS_HEAP_ALL_GAMES);
+    if (!library_metrics_format_overlay(
+            LIBRARY_METRICS_OVERLAY_ALL_GAMES, &overlay)) return;
+    for (row = 0U; row < LIBRARY_METRICS_OVERLAY_ROWS; ++row) {
+        if (overlay.rows[row][0] == '\0') continue;
+        rdpq_text_print(&parms, FNT_DEFAULT, 52,
+                        370 + (int)row * 12, overlay.rows[row]);
+    }
+}
+#endif
+
 static const char *status_text(const library_snapshot_t *snapshot,
                                const menu_t *menu)
 {
@@ -507,6 +549,11 @@ static void draw(menu_t *menu, surface_t *display,
     size_t count = snapshot == NULL ? 0U
                                     : library_snapshot_record_count(snapshot);
     size_t slot;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    bool layer1_first_frame =
+        library_metrics_critical_interval_active();
+    bool layer1_drew_record = false;
+#endif
     rdpq_textparms_t status_parms = {
         .width = 536, .height = 20, .align = ALIGN_LEFT,
         .valign = VALIGN_TOP, .wrap = WRAP_NONE
@@ -570,7 +617,14 @@ static void draw(menu_t *menu, surface_t *display,
                         y0 + BORDER_THICKNESS + LIBRARY_CARD_PADDING_Y +
                             LIBRARY_TEXT_OFFSET_Y,
                         title);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        if (record != NULL) layer1_drew_record = true;
+#endif
     }
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    draw_layer1_overlay();
+#endif
+
     ui_components_actions_bar_text_draw(
         STL_DEFAULT, ALIGN_LEFT, VALIGN_TOP,
         menu->library_view.transition == LIBRARY_VIEW_TRANSITION_IDLE
@@ -578,19 +632,48 @@ static void draw(menu_t *menu, surface_t *display,
     rdpq_text_print(&status_parms, FNT_DEFAULT, 52, 55,
                     status_text(snapshot, menu));
     rdpq_detach_show();
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (layer1_first_frame) {
+        bool submitted = layer1_record_trace_event(
+            LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_FRAME_SUBMITTED);
+        if (submitted && layer1_drew_record)
+            (void)layer1_record_trace_event(
+                LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_NONEMPTY_FRAME_SUBMITTED);
+    } else if (layer1_drew_record &&
+               !layer1_event_recorded(
+                   LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_NONEMPTY_FRAME_SUBMITTED)) {
+        (void)layer1_record_trace_event(
+            LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_NONEMPTY_FRAME_SUBMITTED);
+    }
+#endif
 }
 
 void view_all_games_init(menu_t *menu)
 {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (library_metrics_critical_interval_active())
+        (void)layer1_record_trace_event(
+            LIBRARY_METRICS_EVENT_ALL_GAMES_INIT_ENTER);
+#endif
     menu->library_view.transition = LIBRARY_VIEW_TRANSITION_IDLE;
     menu->library_view.pending_destination = MENU_MODE_LIBRARY;
     library_service_resume(menu->library_service);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (library_metrics_critical_interval_active())
+        (void)layer1_record_trace_event(
+            LIBRARY_METRICS_EVENT_ALL_GAMES_INIT_EXIT);
+#endif
 }
 
 void view_all_games_display(menu_t *menu, surface_t *display)
 {
     const library_snapshot_t *snapshot;
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (library_metrics_critical_interval_active())
+        (void)layer1_record_trace_event(
+            LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_FRAME_BEGIN);
+#endif
     library_view_model_step(menu);
     snapshot = view_snapshot_acquire(menu->library_service);
     draw(menu, display, snapshot);

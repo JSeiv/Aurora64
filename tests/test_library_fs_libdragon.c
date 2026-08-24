@@ -1,5 +1,12 @@
 #define TEST_NO_MAIN
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #include "acutest.h"
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 #include "menu/library/library_fs.h"
 
 #include <dir.h>
@@ -583,3 +590,173 @@ void test_libdragon_adapter_token_exhaustion_preflight(void)
     library_fs_libdragon_deinit(&fs);
     library_fs_libdragon_test_set_token_issuer(&saved);
 }
+
+#if LAYER1_FOUNDATION_FOCUSED_TESTS
+void test_layer1_fs_activity_lazy_open_close(void)
+{
+    library_fs_t fs;
+    library_fs_libdragon_activity_t activity;
+    library_dirent_t entry;
+    void *directory = NULL;
+    void *file = NULL;
+
+    reset_stub();
+    TEST_ASSERT(library_fs_libdragon_init(&fs, "./"));
+    library_fs_libdragon_activity(&fs, &activity);
+    TEST_CHECK(activity.context_requested_bytes != 0U);
+    TEST_CHECK(activity.directory_slots_current == 0U);
+    TEST_CHECK(activity.directory_slots_peak == 0U);
+    TEST_CHECK(activity.file_slots_current == 0U);
+    TEST_CHECK(activity.file_slots_peak == 0U);
+
+    TEST_ASSERT(fs.dir_open(fs.context, "/games", &directory, &entry) ==
+                LIBRARY_FS_ENTRY);
+    library_fs_libdragon_activity(&fs, &activity);
+    TEST_CHECK(activity.directory_slots_current == 1U);
+    TEST_CHECK(activity.directory_slots_peak == 1U);
+    TEST_CHECK(fs.dir_next(fs.context, directory, &entry) == LIBRARY_FS_EOF);
+    library_fs_libdragon_activity(&fs, &activity);
+    TEST_CHECK(activity.directory_slots_current == 0U);
+    TEST_CHECK(activity.directory_slots_peak == 1U);
+
+    TEST_ASSERT(fs.file_open_read(fs.context, "/Makefile", &file) ==
+                LIBRARY_FS_ENTRY);
+    library_fs_libdragon_activity(&fs, &activity);
+    TEST_CHECK(activity.file_slots_current == 1U);
+    TEST_CHECK(activity.file_slots_peak == 1U);
+    TEST_CHECK(fs.file_close(fs.context, file) == LIBRARY_FS_ENTRY);
+    library_fs_libdragon_activity(&fs, &activity);
+    TEST_CHECK(activity.file_slots_current == 0U);
+    TEST_CHECK(activity.file_slots_peak == 1U);
+    library_fs_libdragon_deinit(&fs);
+}
+
+void test_layer1_fs_activity_cross_instance_rejection(void)
+{
+    library_fs_t first;
+    library_fs_t second;
+    library_fs_libdragon_activity_t first_before;
+    library_fs_libdragon_activity_t first_after;
+    library_fs_libdragon_activity_t second_after;
+    library_dirent_t entry;
+    unsigned char byte = 0U;
+    void *directory = NULL;
+    void *file = NULL;
+
+    reset_stub();
+    TEST_ASSERT(library_fs_libdragon_init(&first, "./"));
+    TEST_ASSERT(library_fs_libdragon_init(&second, "./"));
+    TEST_ASSERT(first.dir_open(first.context, "/first", &directory, &entry) ==
+                LIBRARY_FS_ENTRY);
+    TEST_ASSERT(first.file_open_read(first.context, "/Makefile", &file) ==
+                LIBRARY_FS_ENTRY);
+    library_fs_libdragon_activity(&first, &first_before);
+    TEST_CHECK(first_before.directory_slots_current == 1U);
+    TEST_CHECK(first_before.file_slots_current == 1U);
+
+    TEST_CHECK(second.dir_next(second.context, directory, &entry) ==
+               LIBRARY_FS_ERROR);
+    TEST_CHECK(second.dir_close(second.context, directory) == LIBRARY_FS_ERROR);
+    TEST_CHECK(second.file_read(second.context, file, &byte, 1U) == -1);
+    TEST_CHECK(second.file_close(second.context, file) == LIBRARY_FS_ERROR);
+    library_fs_libdragon_activity(&first, &first_after);
+    library_fs_libdragon_activity(&second, &second_after);
+    TEST_CHECK(memcmp(&first_before, &first_after, sizeof(first_before)) == 0);
+    TEST_CHECK(second_after.directory_slots_current == 0U);
+    TEST_CHECK(second_after.directory_slots_peak == 0U);
+    TEST_CHECK(second_after.file_slots_current == 0U);
+    TEST_CHECK(second_after.file_slots_peak == 0U);
+
+    TEST_CHECK(first.dir_close(first.context, directory) == LIBRARY_FS_ENTRY);
+    TEST_CHECK(first.file_close(first.context, file) == LIBRARY_FS_ENTRY);
+    library_fs_libdragon_deinit(&second);
+    library_fs_libdragon_deinit(&first);
+}
+
+void test_layer1_fs_activity_pool_exhaustion(void)
+{
+    library_fs_t fs;
+    library_fs_libdragon_activity_t activity;
+    library_dirent_t entry;
+    void *directories[TEST_POOL_SIZE];
+    void *files[TEST_POOL_SIZE];
+    void *extra = (void *)(uintptr_t)99U;
+    size_t index;
+
+    reset_stub();
+    TEST_ASSERT(library_fs_libdragon_init(&fs, "./"));
+    for (index = 0U; index < TEST_POOL_SIZE; ++index) {
+        TEST_ASSERT(fs.dir_open(fs.context, "/full", &directories[index],
+                                &entry) == LIBRARY_FS_ENTRY);
+    }
+    library_fs_libdragon_activity(&fs, &activity);
+    TEST_CHECK(activity.directory_slots_current == TEST_POOL_SIZE);
+    TEST_CHECK(activity.directory_slots_peak == TEST_POOL_SIZE);
+    TEST_CHECK(fs.dir_open(fs.context, "/overflow", &extra, &entry) ==
+               LIBRARY_FS_ERROR);
+    TEST_CHECK(extra == NULL);
+    library_fs_libdragon_activity(&fs, &activity);
+    TEST_CHECK(activity.directory_slots_current == TEST_POOL_SIZE);
+    TEST_CHECK(activity.directory_slots_peak == TEST_POOL_SIZE);
+    for (index = 0U; index < TEST_POOL_SIZE; ++index)
+        TEST_CHECK(fs.dir_close(fs.context, directories[index]) ==
+                   LIBRARY_FS_ENTRY);
+
+    for (index = 0U; index < TEST_POOL_SIZE; ++index) {
+        TEST_ASSERT(fs.file_open_read(fs.context, "/Makefile", &files[index]) ==
+                    LIBRARY_FS_ENTRY);
+    }
+    library_fs_libdragon_activity(&fs, &activity);
+    TEST_CHECK(activity.file_slots_current == TEST_POOL_SIZE);
+    TEST_CHECK(activity.file_slots_peak == TEST_POOL_SIZE);
+    extra = (void *)(uintptr_t)99U;
+    TEST_CHECK(fs.file_open_read(fs.context, "/Makefile", &extra) ==
+               LIBRARY_FS_ERROR);
+    TEST_CHECK(extra == NULL);
+    library_fs_libdragon_activity(&fs, &activity);
+    TEST_CHECK(activity.file_slots_current == TEST_POOL_SIZE);
+    TEST_CHECK(activity.file_slots_peak == TEST_POOL_SIZE);
+    for (index = 0U; index < TEST_POOL_SIZE; ++index)
+        TEST_CHECK(fs.file_close(fs.context, files[index]) == LIBRARY_FS_ENTRY);
+    library_fs_libdragon_activity(&fs, &activity);
+    TEST_CHECK(activity.directory_slots_current == 0U);
+    TEST_CHECK(activity.file_slots_current == 0U);
+    library_fs_libdragon_deinit(&fs);
+}
+
+void test_layer1_fs_activity_deinit_forced_close(void)
+{
+    library_fs_t fs;
+    library_fs_libdragon_activity_t before;
+    library_fs_libdragon_activity_t after;
+    library_dirent_t entry;
+    void *directories[2];
+    void *files[2];
+    size_t closes_before;
+    size_t index;
+
+    reset_stub();
+    TEST_ASSERT(library_fs_libdragon_init(&fs, "./"));
+    for (index = 0U; index < 2U; ++index) {
+        TEST_ASSERT(fs.dir_open(fs.context, "/active", &directories[index],
+                                &entry) == LIBRARY_FS_ENTRY);
+        TEST_ASSERT(fs.file_open_read(fs.context, "/Makefile", &files[index]) ==
+                    LIBRARY_FS_ENTRY);
+    }
+    library_fs_libdragon_activity(&fs, &before);
+    TEST_CHECK(before.directory_slots_current == 2U);
+    TEST_CHECK(before.directory_slots_peak == 2U);
+    TEST_CHECK(before.file_slots_current == 2U);
+    TEST_CHECK(before.file_slots_peak == 2U);
+    closes_before = stub.close_calls;
+
+    library_fs_libdragon_deinit(&fs);
+    TEST_CHECK(stub.close_calls == closes_before + 2U);
+    TEST_CHECK(all_zero(&fs, sizeof(fs)));
+    library_fs_libdragon_activity(&fs, &after);
+    TEST_CHECK(after.directory_slots_current == 0U);
+    TEST_CHECK(after.file_slots_current == 0U);
+    TEST_CHECK(before.directory_slots_peak == 2U);
+    TEST_CHECK(before.file_slots_peak == 2U);
+}
+#endif

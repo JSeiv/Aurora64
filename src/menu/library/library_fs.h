@@ -5,6 +5,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifndef FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+#define FEATURE_AURORA_LIBRARY_TIMING_ENABLED 0
+#endif
+
 #define LIBRARY_FS_BASENAME_CAPACITY 256U
 
 typedef enum {
@@ -60,6 +64,19 @@ typedef struct {
  */
 bool library_fs_libdragon_init(library_fs_t *out, const char *storage_prefix);
 void library_fs_libdragon_deinit(library_fs_t *fs);
+
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+typedef struct {
+    uint32_t directory_slots_current;
+    uint32_t directory_slots_peak;
+    uint32_t file_slots_current;
+    uint32_t file_slots_peak;
+    size_t context_requested_bytes;
+} library_fs_libdragon_activity_t;
+
+void library_fs_libdragon_activity(
+    const library_fs_t *fs, library_fs_libdragon_activity_t *out);
+#endif
 
 #ifdef LIBRARY_FS_HOST_TEST
 typedef struct {

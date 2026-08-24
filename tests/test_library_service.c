@@ -1,5 +1,12 @@
 #define TEST_NO_MAIN
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #include "acutest.h"
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 #include "menu/library/library_service.h"
 #include "support/fake_library_fs.h"
@@ -848,3 +855,194 @@ void test_library_service_every_refresh_oom_retains_publication(void)
     fixture.alloc.fail_at = SIZE_MAX;
     fixture_destroy(&fixture);
 }
+
+#if LAYER1_FOUNDATION_FOCUSED_TESTS
+typedef struct {
+    char bytes[LIBRARY_METRICS_TERMINAL_RECORD_BYTES];
+    size_t length;
+    size_t calls;
+} metrics_writer_capture_t;
+
+static int metrics_capture_writer(void *context, const char *bytes,
+                                  size_t length)
+{
+    metrics_writer_capture_t *capture = context;
+    if (capture == NULL || bytes == NULL || length > sizeof(capture->bytes))
+        return -1;
+    memcpy(capture->bytes, bytes, length);
+    capture->length = length;
+    ++capture->calls;
+    return (int)length;
+}
+
+void test_layer1_metrics_terminal_emission(void)
+{
+    metrics_writer_capture_t capture;
+    library_metrics_snapshot_t snapshot;
+
+    memset(&capture, 0, sizeof(capture));
+    library_metrics_reset();
+    library_metrics_record_usb_opportunity(10U);
+    library_metrics_scan_terminal(NULL, LIBRARY_SCANNER_FAILED, true, 20U);
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(snapshot.terminal_pending);
+    TEST_CHECK(!snapshot.terminal_eligible);
+    TEST_CHECK(snapshot.terminal_event_mask == LIBRARY_METRICS_TERMINAL_SCAN);
+    TEST_CHECK(!library_metrics_emit_pending(metrics_capture_writer, &capture));
+    TEST_CHECK(capture.calls == 0U);
+
+    library_metrics_record_usb_opportunity(30U);
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(snapshot.terminal_eligible);
+    TEST_ASSERT(library_metrics_emit_pending(metrics_capture_writer, &capture));
+    TEST_CHECK(capture.calls == 1U);
+    TEST_CHECK(capture.length != 0U);
+    TEST_CHECK(capture.length < sizeof(capture.bytes));
+    TEST_CHECK(memcmp(capture.bytes, "[AURORA64 L1]", 13U) == 0);
+    TEST_CHECK(!library_metrics_emit_pending(metrics_capture_writer, &capture));
+    TEST_CHECK(capture.calls == 1U);
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(!snapshot.terminal_pending);
+    TEST_CHECK(!snapshot.terminal_eligible);
+    TEST_CHECK(snapshot.terminal_event_mask == 0U);
+}
+
+void test_layer1_metrics_post_poll_summary(void)
+{
+    service_fixture_t fixture;
+    library_scanner_poll_stats_t poll_stats = { 2U, 64U };
+    library_metrics_snapshot_t snapshot;
+
+    fixture_init(&fixture, false);
+    library_metrics_record_scanner_poll(100U, 107U, &poll_stats);
+    library_metrics_record_scanner_poll(107U, 112U, &poll_stats);
+    library_metrics_set_scanner_failure(LIBRARY_SCANNER_FAILURE_FILESYSTEM);
+    library_service_layer1_summary(fixture.service, &snapshot);
+    TEST_CHECK(snapshot.poll_count == 2U);
+    TEST_CHECK(snapshot.last_poll_entries == 2U);
+    TEST_CHECK(snapshot.max_poll_entries == 2U);
+    TEST_CHECK(snapshot.total_entries == 4U);
+    TEST_CHECK(snapshot.last_poll_read_bytes == 64U);
+    TEST_CHECK(snapshot.max_poll_read_bytes == 64U);
+    TEST_CHECK(snapshot.total_read_bytes == 128U);
+    TEST_CHECK(snapshot.max_poll_ticks == 7U);
+    TEST_CHECK(snapshot.first_scanner_failure ==
+               LIBRARY_SCANNER_FAILURE_FILESYSTEM);
+    fixture_destroy(&fixture);
+}
+
+void test_layer1_metrics_scan_duration_excludes_pause(void)
+{
+    library_metrics_snapshot_t snapshot;
+
+    library_metrics_reset();
+    library_metrics_scan_attempt(4U, 100U);
+    library_metrics_scan_observe(120U);
+    library_metrics_pause_request(120U);
+    library_metrics_pause_complete(1120U, true);
+    library_metrics_scan_observe(1140U);
+    library_metrics_scan_terminal(NULL, LIBRARY_SCANNER_COMPLETE, true, 1160U);
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(snapshot.scan_duration_valid);
+    TEST_CHECK(snapshot.scan_duration_ticks == 60U);
+    TEST_CHECK(snapshot.pause_duration_valid);
+    TEST_CHECK(snapshot.pause_ticks == 1000U);
+}
+
+void test_layer1_metrics_pause_cancel_latency(void)
+{
+    library_metrics_snapshot_t snapshot;
+
+    library_metrics_reset();
+    library_metrics_pause_request(100U);
+    library_metrics_pause_complete(150U, true);
+    library_metrics_cancel_request(200U);
+    library_metrics_cancel_complete(260U, true);
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(snapshot.pause_duration_valid);
+    TEST_CHECK(snapshot.pause_ticks == 50U);
+    TEST_CHECK(snapshot.cancel_duration_valid);
+    TEST_CHECK(snapshot.cancel_ticks == 60U);
+    TEST_CHECK(snapshot.terminal_event_mask ==
+               (LIBRARY_METRICS_TERMINAL_PAUSE |
+                LIBRARY_METRICS_TERMINAL_CANCEL));
+    TEST_CHECK(!snapshot.timing_invalid);
+
+    library_metrics_reset();
+    library_metrics_pause_request(0U);
+    library_metrics_pause_complete((uint32_t)INT32_MAX + 1U, true);
+    library_metrics_cancel_request(0U);
+    library_metrics_cancel_complete((uint32_t)INT32_MAX + 1U, true);
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(!snapshot.pause_duration_valid);
+    TEST_CHECK(snapshot.pause_ticks == 0U);
+    TEST_CHECK(!snapshot.cancel_duration_valid);
+    TEST_CHECK(snapshot.cancel_ticks == 0U);
+    TEST_CHECK(snapshot.timing_invalid);
+}
+
+void test_layer1_metrics_lifecycle_reset(void)
+{
+    library_metrics_snapshot_t snapshot;
+
+    library_metrics_reset();
+    library_metrics_pause_request(10U);
+    library_metrics_lifecycle_reset();
+    library_metrics_pause_complete(20U, true);
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(!snapshot.pause_duration_valid);
+    TEST_CHECK(snapshot.pause_ticks == 0U);
+    TEST_CHECK(!snapshot.terminal_pending);
+
+    library_metrics_cancel_request(30U);
+    library_metrics_lifecycle_reset();
+    library_metrics_cancel_complete(40U, true);
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(!snapshot.cancel_duration_valid);
+    TEST_CHECK(snapshot.cancel_ticks == 0U);
+    TEST_CHECK(!snapshot.terminal_pending);
+    TEST_CHECK(snapshot.terminal_event_mask == 0U);
+}
+
+void test_layer1_metrics_aggregate_faults_and_reset(void)
+{
+    library_scanner_poll_stats_t first = { 3U, 17U };
+    library_scanner_poll_stats_t second = { 5U, 29U };
+    library_metrics_snapshot_t snapshot;
+
+    library_metrics_reset();
+    library_metrics_record_scanner_poll(
+        0U, (uint32_t)INT32_MAX + 1U, &first);
+    library_metrics_record_scanner_poll(10U, 15U, &second);
+    library_metrics_set_scanner_failure(LIBRARY_SCANNER_FAILURE_FILESYSTEM);
+    library_metrics_set_scanner_failure(LIBRARY_SCANNER_FAILURE_MUTATION);
+    library_metrics_set_builder_failure(
+        LIBRARY_SNAPSHOT_BUILD_FAILURE_ALLOCATION);
+    library_metrics_set_builder_failure(LIBRARY_SNAPSHOT_BUILD_FAILURE_FREEZE);
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(snapshot.poll_count == 2U);
+    TEST_CHECK(snapshot.total_entries == 8U);
+    TEST_CHECK(snapshot.total_read_bytes == 46U);
+    TEST_CHECK(snapshot.max_poll_entries == 5U);
+    TEST_CHECK(snapshot.max_poll_read_bytes == 29U);
+    TEST_CHECK(snapshot.max_poll_ticks == 5U);
+    TEST_CHECK(snapshot.timing_invalid);
+    TEST_CHECK(snapshot.first_scanner_failure ==
+               LIBRARY_SCANNER_FAILURE_FILESYSTEM);
+    TEST_CHECK(snapshot.first_builder_failure ==
+               LIBRARY_SNAPSHOT_BUILD_FAILURE_ALLOCATION);
+
+    library_metrics_reset();
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(snapshot.poll_count == 0U);
+    TEST_CHECK(snapshot.total_entries == 0U);
+    TEST_CHECK(snapshot.total_read_bytes == 0U);
+    TEST_CHECK(!snapshot.timing_invalid);
+    TEST_CHECK(!snapshot.allocation_invalid);
+    TEST_CHECK(!snapshot.counter_overflow);
+    TEST_CHECK(snapshot.first_scanner_failure ==
+               LIBRARY_SCANNER_FAILURE_NONE);
+    TEST_CHECK(snapshot.first_builder_failure ==
+               LIBRARY_SNAPSHOT_BUILD_FAILURE_NONE);
+}
+#endif

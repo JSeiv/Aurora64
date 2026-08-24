@@ -2,6 +2,9 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #endif
+#if LAYER1_FOUNDATION_FOCUSED_TESTS
+#define TEST_NO_MAIN
+#endif
 #ifndef TASK11_STUBS_ONLY
 #include "acutest.h"
 #endif
@@ -24,6 +27,7 @@
 #include "menu/library/library_fs.h"
 #include "menu/library/rom_header.h"
 
+#if !LAYER1_FOUNDATION_FOCUSED_TESTS
 void menu_library_transition_reset(menu_t *menu);
 bool menu_library_rom_cancel_started(menu_t *menu);
 void menu_library_rom_cancel(menu_t *menu);
@@ -761,4 +765,572 @@ TEST_LIST = {
     { "bounded fail-closed teardown", test_teardown_success_and_bounded_failure_are_fail_closed },
     { NULL, NULL }
 };
+#endif
+#else
+
+#include "menu/library/library_metrics.h"
+#include "menu/views/views.h"
+#include "support/fake_library_fs.h"
+#include "support/layer1_view_host_shims.h"
+#include "support/rom_fixture_builder.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#define CLOSURE_GUARD 20000U
+
+void menu_library_transition_reset(menu_t *menu);
+void menu_library_coordinate_frame(menu_t *menu);
+bool menu_library_teardown(menu_t *menu, size_t poll_limit);
+void menu_library_poll_usb_and_emit(menu_t *menu,
+                                    library_metrics_writer_t writer,
+                                    void *writer_context);
+
+_Static_assert(LIBRARY_METRICS_EVENT_COUNT == 8U,
+               "Phase 4 trace protocol requires exactly eight event slots");
+
+typedef struct {
+    fake_library_fs_t fs;
+    library_service_t *service;
+    menu_t menu;
+} closure_fixture_t;
+
+typedef enum {
+    CLOSURE_WRITER_REFUSE,
+    CLOSURE_WRITER_NEGATIVE,
+    CLOSURE_WRITER_SHORT,
+    CLOSURE_WRITER_EXACT
+} closure_writer_mode_t;
+
+typedef struct {
+    unsigned char before;
+    char bytes[LIBRARY_METRICS_TERMINAL_RECORD_BYTES];
+    unsigned char after;
+    const char *pointer;
+    size_t length;
+    size_t calls;
+    size_t usb_returns;
+    bool called_after_usb_return;
+    closure_writer_mode_t mode;
+} closure_writer_t;
+
+static library_dirent_t closure_rom_entry(void)
+{
+    library_dirent_t entry;
+    memset(&entry, 0, sizeof(entry));
+    (void)strncpy(entry.basename, "closure.z64",
+                  sizeof(entry.basename) - 1U);
+    entry.type = LIBRARY_FS_ENTRY_FILE;
+    entry.size = ROM_HEADER_WITH_IPL3_BYTES;
+    entry.modified_time = 17;
+    return entry;
+}
+
+static void closure_fixture_init(closure_fixture_t *fixture, bool with_rom)
+{
+    library_service_config_t config;
+    library_dirent_t entry;
+    uint8_t rom[ROM_HEADER_WITH_IPL3_BYTES];
+
+    memset(fixture, 0, sizeof(*fixture));
+    fake_library_fs_init(&fixture->fs);
+    if (with_rom) {
+        entry = closure_rom_entry();
+        TEST_ASSERT(fake_library_fs_add_directory(
+            &fixture->fs, "/", &entry, 1U));
+        rom_fixture_build_canonical(rom);
+        TEST_ASSERT(fake_library_fs_add_file(
+            &fixture->fs, "/closure.z64", rom, sizeof(rom), 17));
+    } else {
+        TEST_ASSERT(fake_library_fs_add_directory(
+            &fixture->fs, "/", NULL, 0U));
+    }
+
+    memset(&config, 0, sizeof(config));
+    config.fs = fake_library_fs_interface(&fixture->fs);
+    config.roots = library_roots_default();
+    config.budget.max_directory_entries = 1U;
+    config.budget.max_read_bytes = 64U;
+    config.budget.max_ticks = 10U;
+    config.storage_prefix = "sd:/";
+    TEST_ASSERT(library_service_init(&fixture->service, &config));
+
+    memset(&fixture->menu, 0, sizeof(fixture->menu));
+    fixture->menu.mode = MENU_MODE_HOME;
+    fixture->menu.next_mode = MENU_MODE_HOME;
+    fixture->menu.storage_prefix = "sd:/";
+    fixture->menu.library_service = fixture->service;
+    menu_library_transition_reset(&fixture->menu);
+    usb_comm_transition_reset();
+}
+
+static void closure_drain(closure_fixture_t *fixture, menu_mode_t mode)
+{
+    size_t guard;
+    if (fixture->service == NULL) return;
+    library_service_request_cancel(fixture->service);
+    for (guard = 0U; guard < CLOSURE_GUARD &&
+         !library_service_is_quiesced(fixture->service); ++guard) {
+        library_service_poll(fixture->service, mode);
+    }
+    TEST_CHECK(guard < CLOSURE_GUARD);
+    TEST_CHECK(library_service_is_quiesced(fixture->service));
+}
+
+static void closure_fixture_destroy(closure_fixture_t *fixture)
+{
+    if (fixture->service == NULL) return;
+    closure_drain(fixture, MENU_MODE_BOOT);
+    library_service_free(fixture->service);
+    fixture->service = NULL;
+    fixture->menu.library_service = NULL;
+}
+
+static uint32_t closure_poll_until_published(closure_fixture_t *fixture,
+                                             size_t expected_records)
+{
+    size_t guard;
+    for (guard = 0U; guard < CLOSURE_GUARD; ++guard) {
+        const library_snapshot_t *snapshot =
+            library_service_snapshot_acquire(fixture->service);
+        if (snapshot != NULL &&
+            library_snapshot_status(snapshot) == LIBRARY_SNAPSHOT_FRESH &&
+            library_snapshot_record_count(snapshot) == expected_records) {
+            uint32_t generation = library_snapshot_generation(snapshot);
+            library_service_snapshot_release(snapshot);
+            return generation;
+        }
+        if (snapshot != NULL) library_service_snapshot_release(snapshot);
+        library_service_poll(fixture->service, MENU_MODE_HOME);
+    }
+    TEST_ASSERT(false);
+    return 0U;
+}
+
+static void closure_writer_reset(closure_writer_t *writer,
+                                 closure_writer_mode_t mode)
+{
+    memset(writer, 0, sizeof(*writer));
+    writer->before = 0xa5U;
+    writer->after = 0x5aU;
+    writer->mode = mode;
+}
+
+static int closure_writer_capture(void *context, const char *bytes,
+                                  size_t length)
+{
+    closure_writer_t *writer = context;
+    size_t copy_length = length;
+    ++writer->calls;
+    writer->pointer = bytes;
+    writer->length = length;
+    writer->called_after_usb_return = !layer1_view_host_usb_poll_active();
+    writer->usb_returns = layer1_view_host_usb_return_count();
+    if (copy_length >= sizeof(writer->bytes))
+        copy_length = sizeof(writer->bytes) - 1U;
+    if (bytes != NULL && copy_length != 0U)
+        memcpy(writer->bytes, bytes, copy_length);
+    writer->bytes[copy_length] = '\0';
+    if (writer->mode == CLOSURE_WRITER_REFUSE) return 0;
+    if (writer->mode == CLOSURE_WRITER_NEGATIVE) return -7;
+    if (writer->mode == CLOSURE_WRITER_SHORT)
+        return length == 0U ? 0 : (int)(length - 1U);
+    return (int)length;
+}
+
+static uint8_t closure_event_bit(library_metrics_event_t event)
+{
+    return (uint8_t)(UINT8_C(1) << (unsigned int)event);
+}
+
+static void closure_finish_trace(uint32_t id, uint32_t generation,
+                                 bool quiescence, bool nonempty)
+{
+    if (quiescence) {
+        TEST_ASSERT(library_metrics_trace_record(
+            LIBRARY_METRICS_EVENT_HOME_ALL_GAMES_QUIESCED,
+            id, generation));
+    }
+    TEST_ASSERT(library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_INIT_ENTER, id, generation));
+    TEST_ASSERT(library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_INIT_EXIT, id, generation));
+    TEST_ASSERT(library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_FRAME_BEGIN,
+        id, generation));
+    TEST_ASSERT(library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_FRAME_SUBMITTED,
+        id, generation));
+    if (nonempty) {
+        TEST_ASSERT(library_metrics_trace_record(
+            LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_NONEMPTY_FRAME_SUBMITTED,
+            id, generation));
+    }
+}
+
+void test_phase4_trace_protocol_context_id_reuse(void)
+{
+    library_metrics_snapshot_t snapshot;
+    uint32_t first;
+    uint32_t second;
+    uint32_t wrapped;
+    uint32_t ambiguous;
+    bool valid;
+
+    library_metrics_reset();
+    library_metrics_host_set_tick_step(1U);
+    library_metrics_host_set_ticks(10U);
+    first = library_metrics_trace_begin(41U);
+    TEST_CHECK(first == 1U);
+    TEST_CHECK(!library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_FRAME_BEGIN,
+        first, 41U));
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(snapshot.trace.valid_mask == closure_event_bit(
+        LIBRARY_METRICS_EVENT_HOME_ALL_GAMES_INPUT_RECEIVED));
+    TEST_CHECK(snapshot.trace.protocol_invalid);
+
+    second = library_metrics_trace_begin(42U);
+    TEST_CHECK(second == first + 1U && second != 0U);
+    TEST_CHECK(!library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_INIT_ENTER, first, 41U));
+    TEST_CHECK(!library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_INIT_ENTER, second, 41U));
+    TEST_CHECK(library_metrics_trace_accept_transition(second, 42U, false));
+    TEST_CHECK(!library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_HOME_ALL_GAMES_QUIESCED,
+        second, 42U));
+    TEST_CHECK(library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_INIT_ENTER, second, 42U));
+    TEST_CHECK(!library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_INIT_ENTER, second, 42U));
+    TEST_CHECK(library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_INIT_EXIT, second, 42U));
+    TEST_CHECK(library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_FRAME_BEGIN,
+        second, 42U));
+    TEST_CHECK(library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_FRAME_SUBMITTED,
+        second, 42U));
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK((snapshot.trace.applicable_mask & closure_event_bit(
+        LIBRARY_METRICS_EVENT_HOME_ALL_GAMES_QUIESCED)) == 0U);
+    TEST_CHECK((snapshot.trace.valid_mask & closure_event_bit(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_NONEMPTY_FRAME_SUBMITTED)) == 0U);
+
+    library_metrics_host_set_ticks(UINT32_MAX - 4U);
+    library_metrics_host_set_tick_step(0U);
+    second = library_metrics_trace_begin(43U);
+    library_metrics_host_set_ticks(3U);
+    TEST_CHECK(library_metrics_trace_accept_transition(second, 43U, true));
+    library_metrics_snapshot(&snapshot);
+    wrapped = library_metrics_tick_delta(
+        snapshot.trace.ticks[
+            LIBRARY_METRICS_EVENT_HOME_ALL_GAMES_INPUT_RECEIVED],
+        snapshot.trace.ticks[
+            LIBRARY_METRICS_EVENT_HOME_ALL_GAMES_TRANSITION_REQUESTED],
+        &valid);
+    TEST_CHECK(valid && wrapped == 8U);
+    TEST_CHECK(!library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_INIT_ENTER, second, 43U));
+    TEST_CHECK(library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_HOME_ALL_GAMES_QUIESCED,
+        second, 43U));
+    closure_finish_trace(second, 43U, false, false);
+
+    ambiguous = library_metrics_tick_delta(
+        0U, (uint32_t)INT32_MAX + 1U, &valid);
+    TEST_CHECK(!valid && ambiguous == 0U);
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(snapshot.trace.transition_id == second);
+    TEST_CHECK(snapshot.trace.generation == 43U);
+    TEST_CHECK(snapshot.trace.ticks[
+        LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_NONEMPTY_FRAME_SUBMITTED] == 0U);
+}
+
+void test_phase4_transition_action_decisions_and_supersession(void)
+{
+    closure_fixture_t fixture;
+    library_metrics_snapshot_t metrics;
+    const library_snapshot_t *snapshot;
+    uint32_t generation;
+    uint32_t immediate_id;
+    uint32_t superseded_id;
+    size_t guard;
+
+    closure_fixture_init(&fixture, true);
+    generation = closure_poll_until_published(&fixture, 1U);
+    library_metrics_reset();
+    library_metrics_host_set_ticks(100U);
+    library_metrics_host_set_tick_step(1U);
+    layer1_view_host_reset();
+    layer1_view_host_observe_menu(&fixture.menu);
+
+    fixture.menu.home.selected = 0;
+    fixture.menu.actions.enter = true;
+    view_home_display(&fixture.menu, NULL);
+    fixture.menu.actions.enter = false;
+    library_metrics_snapshot(&metrics);
+    TEST_CHECK(metrics.trace.transition_id == 0U);
+    TEST_CHECK(fixture.menu.next_mode == MENU_MODE_HOME);
+    TEST_CHECK(layer1_view_host_sound_calls() == 0U);
+
+    fixture.menu.home.selected = 5;
+    fixture.menu.actions.enter = true;
+    view_home_display(&fixture.menu, NULL);
+    fixture.menu.actions.enter = false;
+    library_metrics_snapshot(&metrics);
+    immediate_id = metrics.trace.transition_id;
+    TEST_CHECK(immediate_id != 0U);
+    TEST_CHECK(metrics.trace.generation == generation);
+    TEST_CHECK(layer1_view_host_sound_calls() == 1U);
+    TEST_CHECK(layer1_view_host_sound_saw_input_trace());
+    TEST_CHECK(layer1_view_host_sound_next_mode() == MENU_MODE_HOME);
+    TEST_CHECK(fixture.menu.next_mode == MENU_MODE_LIBRARY);
+
+    menu_library_coordinate_frame(&fixture.menu);
+    TEST_CHECK(fixture.menu.next_mode == MENU_MODE_HOME);
+    TEST_CHECK(fixture.menu.mode == MENU_MODE_HOME);
+    menu_library_coordinate_frame(&fixture.menu);
+    TEST_CHECK(fixture.menu.next_mode == MENU_MODE_LIBRARY);
+    library_metrics_snapshot(&metrics);
+    TEST_CHECK((metrics.trace.valid_mask & closure_event_bit(
+        LIBRARY_METRICS_EVENT_HOME_ALL_GAMES_TRANSITION_REQUESTED)) != 0U);
+    TEST_CHECK((metrics.trace.valid_mask & closure_event_bit(
+        LIBRARY_METRICS_EVENT_HOME_ALL_GAMES_QUIESCED)) != 0U);
+
+    snapshot = library_service_snapshot_acquire(fixture.service);
+    TEST_ASSERT(snapshot != NULL);
+    TEST_CHECK(library_snapshot_generation(snapshot) == generation);
+    TEST_CHECK(library_snapshot_record_count(snapshot) == 1U);
+    library_service_snapshot_release(snapshot);
+    fixture.menu.mode = MENU_MODE_LIBRARY;
+    library_service_poll(fixture.service, MENU_MODE_LIBRARY);
+    TEST_CHECK(!library_service_is_quiesced(fixture.service));
+
+    fixture.menu.mode = MENU_MODE_HOME;
+    fixture.menu.next_mode = MENU_MODE_HOME;
+    fixture.menu.actions.enter = true;
+    view_home_display(&fixture.menu, NULL);
+    fixture.menu.actions.enter = false;
+    menu_library_coordinate_frame(&fixture.menu);
+    TEST_CHECK(fixture.menu.next_mode == MENU_MODE_HOME);
+    library_metrics_snapshot(&metrics);
+    superseded_id = metrics.trace.transition_id;
+
+    fixture.menu.actions.enter = true;
+    view_home_display(&fixture.menu, NULL);
+    fixture.menu.actions.enter = false;
+    library_metrics_snapshot(&metrics);
+    TEST_CHECK(metrics.trace.transition_id == superseded_id + 1U);
+    TEST_CHECK(metrics.trace.generation == generation);
+    menu_library_coordinate_frame(&fixture.menu);
+    TEST_CHECK(fixture.menu.next_mode == MENU_MODE_HOME);
+    for (guard = 0U; guard < CLOSURE_GUARD &&
+         !library_service_is_quiesced(fixture.service); ++guard) {
+        library_service_poll(fixture.service, MENU_MODE_HOME);
+        menu_library_coordinate_frame(&fixture.menu);
+    }
+    TEST_CHECK(guard < CLOSURE_GUARD);
+    menu_library_coordinate_frame(&fixture.menu);
+    TEST_CHECK(fixture.menu.next_mode == MENU_MODE_LIBRARY);
+    library_metrics_snapshot(&metrics);
+    TEST_CHECK(metrics.trace.transition_id == superseded_id + 1U);
+    TEST_CHECK(!metrics.publication_failed);
+
+    closure_fixture_destroy(&fixture);
+}
+
+void test_phase4_output_critical_usb_retry_stable_record(void)
+{
+    menu_t menu;
+    closure_writer_t writer;
+    library_metrics_snapshot_t snapshot;
+    library_metrics_overlay_t overlay;
+    const char *first_pointer;
+    char first_bytes[LIBRARY_METRICS_TERMINAL_RECORD_BYTES];
+    size_t first_length;
+    uint32_t id;
+
+    memset(&menu, 0, sizeof(menu));
+    menu.mode = MENU_MODE_HOME;
+    menu.next_mode = MENU_MODE_HOME;
+    layer1_view_host_reset();
+    library_metrics_reset();
+    library_metrics_host_set_ticks(10U);
+    library_metrics_host_set_tick_step(1U);
+
+    id = library_metrics_trace_begin(7U);
+    TEST_ASSERT(library_metrics_trace_accept_transition(id, 7U, false));
+    TEST_ASSERT(library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_INIT_ENTER, id, 7U));
+    TEST_ASSERT(library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_INIT_EXIT, id, 7U));
+    TEST_ASSERT(library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_FRAME_BEGIN, id, 7U));
+    TEST_CHECK(library_metrics_critical_interval_active());
+    TEST_CHECK(!library_metrics_format_overlay(
+        LIBRARY_METRICS_OVERLAY_ALL_GAMES, &overlay));
+
+    closure_writer_reset(&writer, CLOSURE_WRITER_EXACT);
+    menu_library_poll_usb_and_emit(&menu, closure_writer_capture, &writer);
+    TEST_CHECK(writer.calls == 0U);
+    TEST_ASSERT(library_metrics_trace_record(
+        LIBRARY_METRICS_EVENT_ALL_GAMES_FIRST_FRAME_SUBMITTED, id, 7U));
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(snapshot.terminal_pending);
+    TEST_CHECK(!snapshot.terminal_eligible);
+    TEST_CHECK(snapshot.terminal_event_mask ==
+               LIBRARY_METRICS_TERMINAL_TRANSITION);
+    TEST_CHECK(!library_metrics_emit_pending(closure_writer_capture, &writer));
+    TEST_CHECK(writer.calls == 0U);
+
+    menu_library_poll_usb_and_emit(&menu, NULL, NULL);
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(snapshot.terminal_pending && snapshot.terminal_eligible);
+    TEST_CHECK(!library_metrics_emit_pending(NULL, NULL));
+
+    closure_writer_reset(&writer, CLOSURE_WRITER_REFUSE);
+    TEST_CHECK(!library_metrics_emit_pending(closure_writer_capture, &writer));
+    TEST_CHECK(writer.calls == 1U);
+    first_pointer = writer.pointer;
+    first_length = writer.length;
+    memcpy(first_bytes, writer.bytes, first_length + 1U);
+    TEST_CHECK(writer.before == 0xa5U && writer.after == 0x5aU);
+
+    writer.mode = CLOSURE_WRITER_NEGATIVE;
+    TEST_CHECK(!library_metrics_emit_pending(closure_writer_capture, &writer));
+    TEST_CHECK(writer.pointer == first_pointer);
+    TEST_CHECK(writer.length == first_length);
+    TEST_CHECK(memcmp(writer.bytes, first_bytes, first_length + 1U) == 0);
+
+    writer.mode = CLOSURE_WRITER_SHORT;
+    TEST_CHECK(!library_metrics_emit_pending(closure_writer_capture, &writer));
+    TEST_CHECK(writer.pointer == first_pointer);
+    TEST_CHECK(memcmp(writer.bytes, first_bytes, first_length + 1U) == 0);
+
+    writer.mode = CLOSURE_WRITER_EXACT;
+    TEST_CHECK(library_metrics_emit_pending(closure_writer_capture, &writer));
+    TEST_CHECK(writer.pointer == first_pointer);
+    TEST_CHECK(writer.called_after_usb_return);
+    TEST_CHECK(writer.usb_returns == layer1_view_host_usb_poll_calls());
+    library_metrics_snapshot(&snapshot);
+    TEST_CHECK(!snapshot.terminal_pending && !snapshot.terminal_eligible);
+    TEST_CHECK(snapshot.terminal_event_mask == 0U);
+    TEST_CHECK(!library_metrics_emit_pending(closure_writer_capture, &writer));
+    TEST_CHECK(menu.next_mode == MENU_MODE_HOME);
+}
+
+static void closure_queue_unavailable_record(uint32_t generation,
+                                             bool publication_valid,
+                                             const library_snapshot_t *published)
+{
+    library_scanner_stats_t stats;
+    memset(&stats, 0, sizeof(stats));
+    library_metrics_scan_attempt(generation, 10U);
+    library_metrics_scan_terminal(&stats, LIBRARY_SCANNER_COMPLETE,
+                                  true, 20U);
+    library_metrics_publication_succeeded(
+        generation, publication_valid ? published : NULL);
+    if (publication_valid)
+        library_metrics_publication_failed(generation);
+    else
+        library_metrics_invalidate_snapshot_detail(generation);
+}
+
+void test_phase4_seam_service_poll_detail_usb_emission(void)
+{
+    closure_fixture_t fixture;
+    closure_writer_t writer;
+    library_metrics_snapshot_t metrics;
+    const library_snapshot_t *published;
+    uint32_t generation;
+    size_t usb_before;
+
+    layer1_view_host_reset();
+    library_metrics_reset();
+    library_metrics_host_set_ticks(100U);
+    library_metrics_host_set_tick_step(1U);
+    closure_fixture_init(&fixture, true);
+    generation = closure_poll_until_published(&fixture, 1U);
+
+    closure_writer_reset(&writer, CLOSURE_WRITER_EXACT);
+    menu_library_poll_usb_and_emit(
+        &fixture.menu, closure_writer_capture, &writer);
+    menu_library_poll_usb_and_emit(
+        &fixture.menu, closure_writer_capture, &writer);
+    TEST_CHECK(writer.calls == 0U);
+    library_metrics_snapshot(&metrics);
+    TEST_CHECK(metrics.retained_path_detail_pending);
+    TEST_CHECK(!metrics.retained_path_detail_valid);
+
+    usb_before = layer1_view_host_usb_return_count();
+    library_service_poll(fixture.service, MENU_MODE_HOME);
+    library_metrics_snapshot(&metrics);
+    TEST_CHECK(!metrics.retained_path_detail_pending);
+    TEST_CHECK(metrics.publication_facts_valid);
+    TEST_CHECK(metrics.retained_path_detail_valid);
+    TEST_CHECK(metrics.published_generation == generation);
+    TEST_CHECK(metrics.record_count == 1U);
+    TEST_CHECK(metrics.retained_path_count == 1U);
+    TEST_CHECK(metrics.retained_path_bytes != 0U);
+
+    menu_library_poll_usb_and_emit(
+        &fixture.menu, closure_writer_capture, &writer);
+    TEST_CHECK(writer.calls == 1U);
+    TEST_CHECK(writer.called_after_usb_return);
+    TEST_CHECK(writer.usb_returns == usb_before + 1U);
+    TEST_CHECK(strstr(writer.bytes,
+                      "publication_facts_valid=1 ") != NULL);
+    TEST_CHECK(strstr(writer.bytes,
+                      "retained_path_detail_valid=1 ") != NULL);
+    TEST_CHECK(strstr(writer.bytes, "records=1 paths=1/") != NULL);
+
+    library_metrics_reset();
+    library_metrics_record_usb_opportunity(100U);
+    library_metrics_snapshot(&metrics);
+    TEST_CHECK(metrics.max_usb_gap_ticks == 0U);
+    library_metrics_record_usb_opportunity(108U);
+    library_metrics_snapshot(&metrics);
+    TEST_CHECK(metrics.max_usb_gap_ticks == 8U);
+    library_metrics_record_usb_opportunity(UINT32_MAX - 4U);
+    library_metrics_record_usb_opportunity(3U);
+    library_metrics_snapshot(&metrics);
+    TEST_CHECK(metrics.max_usb_gap_ticks == 8U);
+    library_metrics_record_usb_opportunity(
+        3U + (uint32_t)INT32_MAX + 1U);
+    library_metrics_snapshot(&metrics);
+    TEST_CHECK(metrics.timing_invalid);
+    TEST_CHECK(metrics.max_usb_gap_ticks == 8U);
+
+    published = library_service_snapshot_acquire(fixture.service);
+    TEST_ASSERT(published != NULL);
+
+    library_metrics_reset();
+    closure_queue_unavailable_record(generation, true, published);
+    closure_writer_reset(&writer, CLOSURE_WRITER_EXACT);
+    library_metrics_record_usb_opportunity(30U);
+    TEST_CHECK(library_metrics_emit_pending(closure_writer_capture, &writer));
+    TEST_CHECK(strstr(writer.bytes,
+                      "publication_facts_valid=1 ") != NULL);
+    TEST_CHECK(strstr(writer.bytes,
+                      "retained_path_detail_valid=0 ") != NULL);
+    TEST_CHECK(strstr(writer.bytes, "paths=1/n/a") != NULL);
+
+    library_metrics_reset();
+    closure_queue_unavailable_record(generation, false, NULL);
+    closure_writer_reset(&writer, CLOSURE_WRITER_EXACT);
+    library_metrics_record_usb_opportunity(31U);
+    TEST_CHECK(library_metrics_emit_pending(closure_writer_capture, &writer));
+    TEST_CHECK(strstr(writer.bytes,
+                      "publication_facts_valid=0 ") != NULL);
+    TEST_CHECK(strstr(writer.bytes,
+                      "retained_path_detail_valid=0 ") != NULL);
+    TEST_CHECK(strstr(writer.bytes,
+                      "records=n/a paths=n/a/n/a warn=n/a err=n/a") != NULL);
+
+    library_service_snapshot_release(published);
+    closure_fixture_destroy(&fixture);
+}
+
 #endif

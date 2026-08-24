@@ -207,8 +207,47 @@ void menu_library_coordinate_frame(menu_t *owner)
             owner, menu_library_transition.details_destination);
         return;
     }
-    (void)library_service_coordinate_transition(
-        owner->library_service, owner->mode, &owner->next_mode);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    menu_mode_t metrics_current_mode = owner->mode;
+    menu_mode_t metrics_requested_mode = owner->next_mode;
+    uint32_t metrics_transition_id = 0U;
+    uint32_t metrics_generation = 0U;
+    bool metrics_trace_active = library_metrics_trace_context(
+        &metrics_transition_id, &metrics_generation);
+    bool transition_allowed;
+#endif
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    transition_allowed =
+#else
+    (void)
+#endif
+        library_service_coordinate_transition(
+            owner->library_service, owner->mode, &owner->next_mode);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (metrics_trace_active &&
+        metrics_current_mode == MENU_MODE_HOME &&
+        metrics_requested_mode == MENU_MODE_LIBRARY) {
+        bool immediate = owner->library_service == NULL &&
+                         transition_allowed &&
+                         owner->next_mode == MENU_MODE_LIBRARY;
+        bool held = owner->library_service != NULL &&
+                    !transition_allowed &&
+                    owner->next_mode == metrics_current_mode;
+        if (immediate || held) {
+            (void)library_metrics_trace_accept_transition(
+                metrics_transition_id, metrics_generation, held);
+        }
+    } else if (metrics_trace_active &&
+               metrics_current_mode == MENU_MODE_HOME &&
+               metrics_requested_mode == metrics_current_mode &&
+               owner->library_service != NULL &&
+               transition_allowed &&
+               owner->next_mode == MENU_MODE_LIBRARY) {
+        (void)library_metrics_trace_record(
+            LIBRARY_METRICS_EVENT_HOME_ALL_GAMES_QUIESCED,
+            metrics_transition_id, metrics_generation);
+    }
+#endif
 }
 
 bool menu_library_teardown(menu_t *owner, size_t poll_limit)
@@ -225,6 +264,27 @@ bool menu_library_teardown(menu_t *owner, size_t poll_limit)
     owner->library_service = NULL;
     return true;
 }
+
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+#ifdef MENU_TRANSITION_HOST_TEST
+void usb_comm_poll(menu_t *owner);
+#define MENU_LIBRARY_USB_POSTPOLL_STORAGE
+#else
+#define MENU_LIBRARY_USB_POSTPOLL_STORAGE static
+#endif
+
+MENU_LIBRARY_USB_POSTPOLL_STORAGE void menu_library_poll_usb_and_emit(
+    menu_t *owner,
+    library_metrics_writer_t writer,
+    void *writer_context)
+{
+    usb_comm_poll(owner);
+    library_metrics_record_usb_opportunity(library_metrics_ticks_now());
+    (void)library_metrics_emit_pending(writer, writer_context);
+}
+
+#undef MENU_LIBRARY_USB_POSTPOLL_STORAGE
+#endif
 
 #ifndef MENU_TRANSITION_HOST_TEST
 
@@ -244,32 +304,14 @@ bool menu_library_teardown(menu_t *owner, size_t poll_limit)
 #endif
 
 #if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
-typedef struct {
-    uint32_t last_service_poll;
-    uint32_t last_usb_poll;
-    uint32_t max_service_gap;
-    uint32_t max_service_duration;
-    uint32_t max_usb_gap;
-} library_timing_t;
-
-static library_timing_t library_timing;
-
-static void library_timing_record_gap(const char *name, uint32_t *last,
-                                      uint32_t *maximum)
+static int library_metrics_debug_writer(void *context, const char *bytes,
+                                        size_t length)
 {
-    uint32_t now = TICKS_READ();
-    uint32_t gap;
-    if (*last == 0U) {
-        *last = now;
-        return;
-    }
-    gap = (uint32_t)TICKS_DISTANCE(*last, now);
-    *last = now;
-    if (gap > *maximum) {
-        *maximum = gap;
-        debugf("[LIBRARY TIMING] max %s: %lu us\n", name,
-               (unsigned long)TICKS_TO_US(gap));
-    }
+    (void)context;
+    if (bytes == NULL || length == 0U ||
+        length >= LIBRARY_METRICS_TERMINAL_RECORD_BYTES) return -1;
+    debugf("%.*s", (int)length, bytes);
+    return (int)length;
 }
 #endif
 
@@ -506,6 +548,10 @@ void menu_run (boot_params_t *boot_params) {
         surface_t *display = display_try_get();
 
         if (display != NULL) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            library_metrics_record_action_opportunity(
+                library_metrics_ticks_now());
+#endif
             actions_update(menu);
 
             view_t *view = menu_get_view(menu->mode);
@@ -525,22 +571,7 @@ void menu_run (boot_params_t *boot_params) {
                 menu_library_action_failed(menu);
             }
 
-#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
-            library_timing_record_gap("service opportunity",
-                                      &library_timing.last_service_poll,
-                                      &library_timing.max_service_gap);
-            uint32_t library_poll_start = TICKS_READ();
-#endif
             library_service_poll(menu->library_service, menu->mode);
-#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
-            uint32_t library_poll_duration =
-                (uint32_t)TICKS_DISTANCE(library_poll_start, TICKS_READ());
-            if (library_poll_duration > library_timing.max_service_duration) {
-                library_timing.max_service_duration = library_poll_duration;
-                debugf("[LIBRARY TIMING] max service poll: %lu us\n",
-                       (unsigned long)TICKS_TO_US(library_poll_duration));
-            }
-#endif
             menu_library_coordinate_frame(menu);
 
             if (menu->mode == MENU_MODE_BOOT) {
@@ -564,11 +595,11 @@ void menu_run (boot_params_t *boot_params) {
         png_decoder_poll();
 
 #if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
-        library_timing_record_gap("USB opportunity",
-                                  &library_timing.last_usb_poll,
-                                  &library_timing.max_usb_gap);
-#endif
+        menu_library_poll_usb_and_emit(
+            menu, library_metrics_debug_writer, NULL);
+#else
         usb_comm_poll(menu);
+#endif
     }
 
     if (!menu_deinit(menu)) abort();

@@ -24,6 +24,10 @@ struct library_scanner {
     library_scan_phase_t phase;
     uint32_t generation;
     library_scanner_stats_t stats;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    library_scanner_failure_t first_failure;
+    library_scanner_poll_stats_t last_poll_stats;
+#endif
 
     scan_path_t *queue;
     size_t queue_head;
@@ -99,6 +103,18 @@ static const char *arena_path(const library_scanner_t *scanner, size_t offset)
     return scanner->arena + offset;
 }
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+static void record_first_failure(library_scanner_t *scanner,
+                                 library_scanner_failure_t failure)
+{
+    if (scanner != NULL &&
+        scanner->first_failure == LIBRARY_SCANNER_FAILURE_NONE &&
+        failure != LIBRARY_SCANNER_FAILURE_NONE) {
+        scanner->first_failure = failure;
+    }
+}
+#endif
+
 static bool append_path(library_scanner_t *scanner, const char *path,
                         size_t *offset_out)
 {
@@ -107,6 +123,12 @@ static bool append_path(library_scanner_t *scanner, const char *path,
     length = strlen(path);
     if (length + 1U > LIBRARY_SCANNER_PATH_BYTES ||
         length + 1U > LIBRARY_SCANNER_PATH_ARENA_BYTES - scanner->arena_used) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        record_first_failure(
+            scanner, length + 1U > LIBRARY_SCANNER_PATH_BYTES
+                         ? LIBRARY_SCANNER_FAILURE_PATH_CAPACITY
+                         : LIBRARY_SCANNER_FAILURE_ARENA_CAPACITY);
+#endif
         return false;
     }
     *offset_out = scanner->arena_used;
@@ -124,14 +146,36 @@ static bool join_path(library_scanner_t *scanner, const char *directory,
     size_t needed;
     size_t at;
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (directory == NULL || basename == NULL || offset_out == NULL) {
+        record_first_failure(scanner, LIBRARY_SCANNER_FAILURE_INTERNAL);
+        return false;
+    }
+#else
     if (directory == NULL || basename == NULL || offset_out == NULL) return false;
+#endif
     directory_length = strlen(directory);
     basename_length = strlen(basename);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (basename_length == 0U || basename_length >= LIBRARY_FS_BASENAME_CAPACITY ||
+        strchr(basename, '/') != NULL) {
+        record_first_failure(scanner, LIBRARY_SCANNER_FAILURE_INTERNAL);
+        return false;
+    }
+#else
     if (basename_length == 0U || basename_length >= LIBRARY_FS_BASENAME_CAPACITY ||
         strchr(basename, '/') != NULL) return false;
+#endif
     needed = directory_length + basename_length + 1U;
     if (!(directory_length == 1U && directory[0] == '/')) ++needed;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (needed > sizeof(path)) {
+        record_first_failure(scanner, LIBRARY_SCANNER_FAILURE_PATH_CAPACITY);
+        return false;
+    }
+#else
     if (needed > sizeof(path)) return false;
+#endif
     memcpy(path, directory, directory_length);
     at = directory_length;
     if (!(directory_length == 1U && directory[0] == '/')) path[at++] = '/';
@@ -141,7 +185,14 @@ static bool join_path(library_scanner_t *scanner, const char *directory,
 
 static bool queue_path(library_scanner_t *scanner, size_t offset, uint8_t depth)
 {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (scanner->queue_count >= LIBRARY_SCANNER_MAX_PATHS) {
+        record_first_failure(scanner, LIBRARY_SCANNER_FAILURE_QUEUE_CAPACITY);
+        return false;
+    }
+#else
     if (scanner->queue_count >= LIBRARY_SCANNER_MAX_PATHS) return false;
+#endif
     scanner->queue[scanner->queue_count].path_offset = offset;
     scanner->queue[scanner->queue_count].depth = depth;
     ++scanner->queue_count;
@@ -153,6 +204,9 @@ static bool close_file(library_scanner_t *scanner)
     if (scanner->file_handle != NULL) {
         if (scanner->fs->file_close(scanner->fs->context,
                                     scanner->file_handle) == LIBRARY_FS_ERROR) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            record_first_failure(scanner, LIBRARY_SCANNER_FAILURE_CLOSE);
+#endif
             return false;
         }
         scanner->file_handle = NULL;
@@ -165,6 +219,9 @@ static bool close_directory(library_scanner_t *scanner)
     if (scanner->directory_handle != NULL) {
         if (scanner->fs->dir_close(scanner->fs->context,
                                    scanner->directory_handle) == LIBRARY_FS_ERROR) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            record_first_failure(scanner, LIBRARY_SCANNER_FAILURE_CLOSE);
+#endif
             return false;
         }
         scanner->directory_handle = NULL;
@@ -193,6 +250,10 @@ static void reset_generation_work(library_scanner_t *scanner)
     }
     memset(&scanner->stats, 0, sizeof(scanner->stats));
     scanner->stats.clean = true;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    scanner->first_failure = LIBRARY_SCANNER_FAILURE_NONE;
+    memset(&scanner->last_poll_stats, 0, sizeof(scanner->last_poll_stats));
+#endif
     scanner->current_directory_valid = false;
     scanner->directory_entries_consumed = 0U;
     scanner->pending_entry_valid = false;
@@ -208,6 +269,11 @@ static void reset_generation_work(library_scanner_t *scanner)
 
 static void fail_generation(library_scanner_t *scanner, bool capacity)
 {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    record_first_failure(scanner,
+                         capacity ? LIBRARY_SCANNER_FAILURE_RECORD_CAPACITY
+                                  : LIBRARY_SCANNER_FAILURE_INTERNAL);
+#endif
     scanner->pending_entry_valid = false;
     scanner->record_count = 0U;
     scanner->stats.clean = false;
@@ -219,6 +285,10 @@ static void fail_generation(library_scanner_t *scanner, bool capacity)
 
 static void fail_candidate(library_scanner_t *scanner, bool mutation)
 {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    record_first_failure(scanner, mutation ? LIBRARY_SCANNER_FAILURE_MUTATION
+                                           : LIBRARY_SCANNER_FAILURE_CANDIDATE_IO);
+#endif
     scanner->stats.clean = false;
     ++scanner->stats.candidate_failures;
     if (mutation) ++scanner->stats.mutation_failures;
@@ -412,15 +482,33 @@ static bool finish_candidate_close(library_scanner_t *scanner)
 static bool add_root_paths(library_scanner_t *scanner)
 {
     size_t index;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (scanner->roots.count == 0U ||
+        scanner->roots.count > LIBRARY_ROOT_MAX_EFFECTIVE) {
+        record_first_failure(scanner, LIBRARY_SCANNER_FAILURE_INTERNAL);
+        return false;
+    }
+#else
     if (scanner->roots.count == 0U ||
         scanner->roots.count > LIBRARY_ROOT_MAX_EFFECTIVE) return false;
+#endif
     for (index = 0U; index < scanner->roots.count; ++index) {
         char normalized[LIBRARY_SCANNER_PATH_BYTES];
         size_t offset;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        if (!library_root_normalize(scanner->roots.paths[index], normalized,
+                                    sizeof(normalized))) {
+            record_first_failure(scanner, LIBRARY_SCANNER_FAILURE_INTERNAL);
+            return false;
+        }
+        if (!append_path(scanner, normalized, &offset) ||
+            !queue_path(scanner, offset, 0U)) return false;
+#else
         if (!library_root_normalize(scanner->roots.paths[index], normalized,
                                     sizeof(normalized)) ||
             !append_path(scanner, normalized, &offset) ||
             !queue_path(scanner, offset, 0U)) return false;
+#endif
     }
     return true;
 }
@@ -600,6 +688,9 @@ static bool retrieve_next_entry(library_scanner_t *scanner,
     result = scanner->fs->dir_next(scanner->fs->context,
                                    scanner->directory_handle, &value);
     if (result == LIBRARY_FS_ERROR) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        record_first_failure(scanner, LIBRARY_SCANNER_FAILURE_FILESYSTEM);
+#endif
         fail_generation(scanner, false);
         return false;
     }
@@ -656,6 +747,9 @@ static bool open_next_directory(library_scanner_t *scanner,
     result = scanner->fs->dir_open(scanner->fs->context, path,
                                    &scanner->directory_handle, &first);
     if (result == LIBRARY_FS_ERROR) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        record_first_failure(scanner, LIBRARY_SCANNER_FAILURE_FILESYSTEM);
+#endif
         fail_generation(scanner, false);
         return false;
     }
@@ -705,9 +799,25 @@ static void consume_pending(library_scanner_t *scanner)
     if (entry_value.type == LIBRARY_FS_ENTRY_DIRECTORY) {
         scanner->phase = LIBRARY_SCAN_PHASE_QUEUE_CHILD;
         if (root && ++scanner->top_level_directory_count > 32U) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            record_first_failure(scanner, LIBRARY_SCANNER_FAILURE_QUEUE_CAPACITY);
+#endif
             fail_generation(scanner, true);
             return;
         }
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        if (scanner->current_directory.depth >= LIBRARY_SCANNER_MAX_DEPTH) {
+            record_first_failure(scanner, LIBRARY_SCANNER_FAILURE_QUEUE_CAPACITY);
+            fail_generation(scanner, true);
+            return;
+        }
+        if (!join_path(scanner, directory, entry_value.basename, &offset) ||
+            !queue_path(scanner, offset,
+                        (uint8_t)(scanner->current_directory.depth + 1U))) {
+            fail_generation(scanner, true);
+            return;
+        }
+#else
         if (scanner->current_directory.depth >= LIBRARY_SCANNER_MAX_DEPTH ||
             !join_path(scanner, directory, entry_value.basename, &offset) ||
             !queue_path(scanner, offset,
@@ -715,6 +825,7 @@ static void consume_pending(library_scanner_t *scanner)
             fail_generation(scanner, true);
             return;
         }
+#endif
         scanner->phase = LIBRARY_SCAN_PHASE_CONSUME_ENTRY;
         return;
     }
@@ -843,7 +954,13 @@ library_scan_result_t library_scanner_poll(library_scanner_t *scanner,
     uint32_t tick_start;
     size_t steps;
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (scanner == NULL) return LIBRARY_SCAN_FAILED_RESULT;
+    memset(&scanner->last_poll_stats, 0, sizeof(scanner->last_poll_stats));
+    if (budget == NULL) return LIBRARY_SCAN_FAILED_RESULT;
+#else
     if (scanner == NULL || budget == NULL) return LIBRARY_SCAN_FAILED_RESULT;
+#endif
     if (scanner->state == LIBRARY_SCANNER_COMPLETE) return LIBRARY_SCAN_COMPLETED;
     if (scanner->state == LIBRARY_SCANNER_FAILED) return LIBRARY_SCAN_FAILED_RESULT;
     if (scanner->state == LIBRARY_SCANNER_QUIESCED) return LIBRARY_SCAN_QUIESCED_RESULT;
@@ -930,12 +1047,19 @@ library_scan_result_t library_scanner_poll(library_scanner_t *scanner,
             if (!close_all(scanner)) break;
             scanner->state = LIBRARY_SCANNER_FAILED;
         } else {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            record_first_failure(scanner, LIBRARY_SCANNER_FAILURE_INTERNAL);
+#endif
             break;
         }
         if (scanner->state != LIBRARY_SCANNER_SCANNING) break;
         if (entries_used >= budget->max_directory_entries &&
             bytes_used >= budget->max_read_bytes) break;
     }
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    scanner->last_poll_stats.directory_entries = entries_used;
+    scanner->last_poll_stats.read_bytes = bytes_used;
+#endif
     if (scanner->state == LIBRARY_SCANNER_COMPLETE) return LIBRARY_SCAN_COMPLETED;
     if (scanner->state == LIBRARY_SCANNER_FAILED) return LIBRARY_SCAN_FAILED_RESULT;
     return (entries_used != 0U || bytes_used != 0U) ? LIBRARY_SCAN_PROGRESS
@@ -974,3 +1098,23 @@ const library_scanner_stats_t *library_scanner_stats(
 {
     return scanner == NULL ? NULL : &scanner->stats;
 }
+
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+library_scanner_failure_t library_scanner_first_failure(
+    const library_scanner_t *scanner)
+{
+    return scanner == NULL ? LIBRARY_SCANNER_FAILURE_NONE
+                           : scanner->first_failure;
+}
+
+void library_scanner_last_poll_stats(
+    const library_scanner_t *scanner, library_scanner_poll_stats_t *out)
+{
+    if (out == NULL) return;
+    if (scanner == NULL) {
+        memset(out, 0, sizeof(*out));
+        return;
+    }
+    *out = scanner->last_poll_stats;
+}
+#endif

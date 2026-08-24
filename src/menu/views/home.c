@@ -1,3 +1,7 @@
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+#include "../library/library_metrics.h"
+#include "../library/library_service.h"
+#endif
 #include "../sound.h"
 #include "../ui_components/constants.h"
 #include "views.h"
@@ -30,6 +34,28 @@ static const char *const home_labels[HOME_CARD_COUNT] = {
 #endif
 };
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+static void draw_layer1_overlay(void)
+{
+    library_metrics_overlay_t overlay;
+    rdpq_textparms_t parms = {
+        .width = 536, .height = 12, .align = ALIGN_LEFT,
+        .valign = VALIGN_TOP, .wrap = WRAP_NONE
+    };
+    size_t row;
+
+    if (library_metrics_critical_interval_active()) return;
+    library_metrics_heap_sample_current(LIBRARY_METRICS_HEAP_HOME);
+    if (!library_metrics_format_overlay(
+            LIBRARY_METRICS_OVERLAY_HOME, &overlay)) return;
+    for (row = 0U; row < LIBRARY_METRICS_OVERLAY_ROWS; ++row) {
+        if (overlay.rows[row][0] == '\0') continue;
+        rdpq_text_print(&parms, FNT_DEFAULT, 52,
+                        370 + (int)row * 12, overlay.rows[row]);
+    }
+}
+#endif
+
 static void process (menu_t *menu) {
     int row = menu->home.selected / HOME_COLUMNS;
     int column = menu->home.selected % HOME_COLUMNS;
@@ -54,6 +80,13 @@ static void process (menu_t *menu) {
         }
 #if FEATURE_AURORA_HOME_ENABLED && FEATURE_AURORA_LIBRARY_ENABLED
         else if (menu->home.selected == 5) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            library_metrics_snapshot_t summary;
+            library_service_layer1_summary(
+                menu->library_service, &summary);
+            (void)library_metrics_trace_begin(
+                summary.published_generation);
+#endif
             sound_play_effect(SFX_ENTER);
             menu->next_mode = MENU_MODE_LIBRARY;
         }
@@ -124,6 +157,10 @@ static void draw (menu_t *menu, surface_t *display) {
 
         rdpq_text_print(&text_parms, FNT_DEFAULT, text_x, text_y, home_labels[i]);
     }
+
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    draw_layer1_overlay();
+#endif
 
     ui_components_actions_bar_text_draw(
         STL_DEFAULT, ALIGN_LEFT, VALIGN_TOP, action_text

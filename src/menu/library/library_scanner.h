@@ -62,6 +62,26 @@ typedef enum {
     LIBRARY_SCAN_CANCELLED
 } library_scan_result_t;
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+typedef enum {
+    LIBRARY_SCANNER_FAILURE_NONE = 0,
+    LIBRARY_SCANNER_FAILURE_PATH_CAPACITY,
+    LIBRARY_SCANNER_FAILURE_ARENA_CAPACITY,
+    LIBRARY_SCANNER_FAILURE_QUEUE_CAPACITY,
+    LIBRARY_SCANNER_FAILURE_RECORD_CAPACITY,
+    LIBRARY_SCANNER_FAILURE_FILESYSTEM,
+    LIBRARY_SCANNER_FAILURE_CANDIDATE_IO,
+    LIBRARY_SCANNER_FAILURE_MUTATION,
+    LIBRARY_SCANNER_FAILURE_CLOSE,
+    LIBRARY_SCANNER_FAILURE_INTERNAL
+} library_scanner_failure_t;
+
+typedef struct {
+    uint32_t directory_entries;
+    uint32_t read_bytes;
+} library_scanner_poll_stats_t;
+#endif
+
 typedef struct {
     uint64_t size;
     int64_t modified_time;
@@ -117,5 +137,11 @@ const library_scanner_record_t *library_scanner_result_at(
     const library_scanner_t *scanner, size_t index);
 const library_scanner_stats_t *library_scanner_stats(
     const library_scanner_t *scanner);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+library_scanner_failure_t library_scanner_first_failure(
+    const library_scanner_t *scanner);
+void library_scanner_last_poll_stats(
+    const library_scanner_t *scanner, library_scanner_poll_stats_t *out);
+#endif
 
 #endif

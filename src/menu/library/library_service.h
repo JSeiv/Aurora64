@@ -5,6 +5,9 @@
 #include "menu/library/library_roots.h"
 #include "menu/library/library_scanner.h"
 #include "menu/library/library_snapshot.h"
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+#include "menu/library/library_metrics.h"
+#endif
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -62,6 +65,10 @@ bool library_service_is_quiesced(const library_service_t *service);
 const library_snapshot_t *library_service_snapshot_acquire(
     library_service_t *service);
 void library_service_snapshot_release(const library_snapshot_t *snapshot);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+void library_service_layer1_summary(
+    const library_service_t *service, library_metrics_snapshot_t *out);
+#endif
 
 /* Captures and defers exits from a safe mode until pause has quiesced. */
 bool library_service_coordinate_transition(library_service_t *service,

@@ -36,6 +36,12 @@ typedef struct {
     char prefix[LIBDRAGON_PREFIX_CAPACITY];
     libdragon_dir_handle_t directories[LIBDRAGON_DIR_HANDLE_COUNT];
     libdragon_file_handle_t files[LIBDRAGON_FILE_HANDLE_COUNT];
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    uint32_t directory_slots_current;
+    uint32_t directory_slots_peak;
+    uint32_t file_slots_current;
+    uint32_t file_slots_peak;
+#endif
 } libdragon_fs_context_t;
 
 /*
@@ -198,6 +204,49 @@ static libdragon_file_handle_t *free_file_slot(libdragon_fs_context_t *context)
     return NULL;
 }
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+static void directory_acquired(libdragon_fs_context_t *context)
+{
+    if (context->directory_slots_current != UINT32_MAX)
+        ++context->directory_slots_current;
+    if (context->directory_slots_current > context->directory_slots_peak)
+        context->directory_slots_peak = context->directory_slots_current;
+}
+
+static void directory_released(libdragon_fs_context_t *context)
+{
+    if (context->directory_slots_current != 0U)
+        --context->directory_slots_current;
+}
+
+static void file_acquired(libdragon_fs_context_t *context)
+{
+    if (context->file_slots_current != UINT32_MAX)
+        ++context->file_slots_current;
+    if (context->file_slots_current > context->file_slots_peak)
+        context->file_slots_peak = context->file_slots_current;
+}
+
+static void file_released(libdragon_fs_context_t *context)
+{
+    if (context->file_slots_current != 0U) --context->file_slots_current;
+}
+#endif
+
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+static void rollback_directory_open(libdragon_fs_context_t *context,
+                                    libdragon_dir_handle_t *slot)
+{
+    int result;
+    if (slot == NULL || !slot->active) return;
+    slot->token = 0U;
+    result = dir_findclose(slot->path, &slot->iterator);
+    if (result == 0) {
+        memset(slot, 0, sizeof(*slot));
+        directory_released(context);
+    }
+}
+#else
 static void rollback_directory_open(libdragon_dir_handle_t *slot)
 {
     int result;
@@ -208,6 +257,7 @@ static void rollback_directory_open(libdragon_dir_handle_t *slot)
         memset(slot, 0, sizeof(*slot));
     }
 }
+#endif
 
 static int adapter_dir_open(void *opaque_context, const char *path, void **handle,
                             library_dirent_t *first)
@@ -242,9 +292,16 @@ static int adapter_dir_open(void *opaque_context, const char *path, void **handl
         return LIBRARY_FS_ERROR;
     }
     slot->active = true;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    directory_acquired(context);
+#endif
     if (!convert_dirent(&slot->iterator, first)) {
         saved_errno = errno;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        rollback_directory_open(context, slot);
+#else
         rollback_directory_open(slot);
+#endif
         memset(first, 0, sizeof(*first));
         errno = saved_errno;
         return LIBRARY_FS_ERROR;
@@ -252,7 +309,11 @@ static int adapter_dir_open(void *opaque_context, const char *path, void **handl
     *handle = issue_token();
     if (*handle == NULL) {
         saved_errno = errno;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        rollback_directory_open(context, slot);
+#else
         rollback_directory_open(slot);
+#endif
         memset(first, 0, sizeof(*first));
         errno = saved_errno;
         return LIBRARY_FS_ERROR;
@@ -294,6 +355,9 @@ static int adapter_dir_next(void *opaque_context, void *handle, library_dirent_t
         saved_errno = errno;
         if (result == 0) {
             slot->active = false;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            directory_released(context);
+#endif
             errno = eof_errno;
             return LIBRARY_FS_EOF;
         }
@@ -322,7 +386,14 @@ static int adapter_dir_close(void *opaque_context, void *handle)
     if (!slot->active) return LIBRARY_FS_EOF;
     result = dir_findclose(slot->path, &slot->iterator);
     saved_errno = errno;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (result == 0) {
+        slot->active = false;
+        directory_released(context);
+    }
+#else
     if (result == 0) slot->active = false;
+#endif
     errno = saved_errno;
     return (result == 0) ? LIBRARY_FS_ENTRY : LIBRARY_FS_ERROR;
 }
@@ -354,11 +425,17 @@ static int adapter_file_open(void *opaque_context, const char *path, void **hand
     }
     memset(slot, 0, sizeof(*slot));
     slot->active = true;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    file_acquired(context);
+#endif
     slot->file = file;
     *handle = issue_token();
     if (*handle == NULL) {
         saved_errno = errno;
         slot->active = false;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        file_released(context);
+#endif
         slot->file = NULL;
         (void)fclose(file);
         errno = saved_errno;
@@ -411,6 +488,9 @@ static int adapter_file_close(void *opaque_context, void *handle)
     }
     if (!slot->active) return LIBRARY_FS_EOF;
     slot->active = false;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    file_released(context);
+#endif
     result = fclose(slot->file);
     saved_errno = errno;
     slot->file = NULL;
@@ -482,6 +562,26 @@ bool library_fs_libdragon_init(library_fs_t *out, const char *storage_prefix)
     return true;
 }
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+void library_fs_libdragon_activity(
+    const library_fs_t *fs, library_fs_libdragon_activity_t *out)
+{
+    libdragon_fs_context_t *context;
+    int saved_errno = errno;
+    if (out == NULL) return;
+    memset(out, 0, sizeof(*out));
+    context = fs == NULL ? NULL : valid_context(fs->context);
+    if (context != NULL) {
+        out->directory_slots_current = context->directory_slots_current;
+        out->directory_slots_peak = context->directory_slots_peak;
+        out->file_slots_current = context->file_slots_current;
+        out->file_slots_peak = context->file_slots_peak;
+        out->context_requested_bytes = sizeof(*context);
+    }
+    errno = saved_errno;
+}
+#endif
+
 #ifdef LIBRARY_FS_HOST_TEST
 void library_fs_libdragon_test_get_token_issuer(
     library_fs_libdragon_token_issuer_t *out)
@@ -518,6 +618,9 @@ void library_fs_libdragon_deinit(library_fs_t *fs)
                     cleanup_errno = (errno != 0) ? errno : EIO;
                 }
                 context->directories[index].active = false;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+                directory_released(context);
+#endif
             }
         }
         for (index = 0U; index < LIBDRAGON_FILE_HANDLE_COUNT; ++index) {
@@ -527,6 +630,9 @@ void library_fs_libdragon_deinit(library_fs_t *fs)
                     cleanup_errno = (errno != 0) ? errno : EIO;
                 }
                 context->files[index].active = false;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+                file_released(context);
+#endif
             }
         }
         context->magic = 0U;

@@ -59,7 +59,22 @@ struct library_snapshot_builder {
     size_t paths_used;
     bool failed;
     bool frozen;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    library_snapshot_build_failure_t first_failure;
+#endif
 };
+
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+static void builder_record_failure(
+    library_snapshot_builder_t *builder,
+    library_snapshot_build_failure_t failure)
+{
+    if (builder == NULL ||
+        failure == LIBRARY_SNAPSHOT_BUILD_FAILURE_NONE) return;
+    if (builder->first_failure == LIBRARY_SNAPSHOT_BUILD_FAILURE_NONE)
+        builder->first_failure = failure;
+}
+#endif
 
 struct library_snapshot {
     library_allocator_t allocator;
@@ -239,13 +254,27 @@ bool library_snapshot_builder_add(library_snapshot_builder_t *builder,
     size_t i;
     size_t length;
     builder_source_t *destination;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (builder == NULL || source == NULL || source->logical_path == NULL ||
+        builder->failed || builder->frozen || builder->scanner != NULL ||
+        builder->detached_records != NULL) {
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_INGESTION);
+        return false;
+    }
+#else
     if (builder == NULL || source == NULL || source->logical_path == NULL ||
         builder->failed || builder->frozen || builder->scanner != NULL ||
         builder->detached_records != NULL) return false;
+#endif
     if (builder->staging == NULL) {
         builder->staging = builder->allocator.calloc_fn(
             builder->allocator.context, 1U, sizeof(*builder->staging));
         if (builder->staging == NULL) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            builder_record_failure(
+                builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_ALLOCATION);
+#endif
             builder->failed = true;
             return false;
         }
@@ -254,6 +283,10 @@ bool library_snapshot_builder_add(library_snapshot_builder_t *builder,
     if (length > LIBRARY_SNAPSHOT_PATH_BYTES ||
         builder->source_count >= LIBRARY_SNAPSHOT_MAX_SOURCES ||
         length > LIBRARY_SNAPSHOT_PATH_POOL_BYTES - builder->paths_used) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_CAPACITY);
+#endif
         builder->failed = true;
         return false;
     }
@@ -262,6 +295,10 @@ bool library_snapshot_builder_add(library_snapshot_builder_t *builder,
             &builder->staging->sources[i].record;
         if (rom_fingerprint_equal(&old->fingerprint, &source->fingerprint) &&
             !compatible(old, source)) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            builder_record_failure(
+                builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_INGESTION);
+#endif
             builder->failed = true;
             return false;
         }
@@ -285,15 +322,35 @@ bool library_snapshot_builder_add_scanner(library_snapshot_builder_t *builder,
         builder->source_count != 0U || builder->staging != NULL ||
         builder->scanner != NULL || scanner == NULL ||
         library_scanner_state(scanner) != LIBRARY_SCANNER_COMPLETE) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_INGESTION);
+#endif
         if (builder != NULL) builder->failed = true;
         return false;
     }
     stats = library_scanner_stats(scanner);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (stats == NULL || !stats->clean) {
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_INGESTION);
+        builder->failed = true;
+        return false;
+    }
+    if (library_scanner_result_count(scanner) >
+        LIBRARY_SNAPSHOT_MAX_SOURCES) {
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_CAPACITY);
+        builder->failed = true;
+        return false;
+    }
+#else
     if (stats == NULL || !stats->clean ||
         library_scanner_result_count(scanner) > LIBRARY_SNAPSHOT_MAX_SOURCES) {
         builder->failed = true;
         return false;
     }
+#endif
     builder->scanner = scanner;
     builder->source_count = library_scanner_result_count(scanner);
     return true;
@@ -308,6 +365,10 @@ static bool detach_scanner(library_snapshot_builder_t *builder)
             &builder->detached_paths, &builder->paths_used,
             &builder->detached_records_size, &builder->detached_paths_size,
             &builder->detached_allocator) || count != builder->source_count) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_INGESTION);
+#endif
         builder->failed = true;
         return false;
     }
@@ -325,17 +386,46 @@ static bool inspect_sorted(library_snapshot_builder_t *builder,
     for (i = 0U; i < builder->source_count; ++i) {
         library_scanner_record_t *source = builder_source_at(builder, i);
         size_t length;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        if (source == NULL || source->logical_path == NULL) {
+            builder_record_failure(
+                builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_INGESTION);
+            return false;
+        }
+#else
         if (source == NULL || source->logical_path == NULL) return false;
+#endif
         length = strlen(source->logical_path) + 1U;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        if (length > LIBRARY_SNAPSHOT_PATH_BYTES ||
+            length > LIBRARY_SNAPSHOT_PATH_POOL_BYTES - paths) {
+            builder_record_failure(
+                builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_CAPACITY);
+            return false;
+        }
+#else
         if (length > LIBRARY_SNAPSHOT_PATH_BYTES ||
             length > LIBRARY_SNAPSHOT_PATH_POOL_BYTES - paths) return false;
+#endif
         paths += length;
         if (previous == NULL ||
             !rom_fingerprint_equal(&previous->fingerprint,
                                    &source->fingerprint)) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            if (++unique > LIBRARY_SNAPSHOT_MAX_RECORDS) {
+                builder_record_failure(
+                    builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_CAPACITY);
+                return false;
+            }
+#else
             if (++unique > LIBRARY_SNAPSHOT_MAX_RECORDS) return false;
+#endif
             previous = source;
         } else if (!compatible(previous, source)) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            builder_record_failure(
+                builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_INGESTION);
+#endif
             return false;
         }
     }
@@ -350,7 +440,15 @@ static bool order_paths(library_snapshot_builder_t *builder, char *paths,
     char temporary[LIBRARY_SNAPSHOT_PATH_BYTES];
     size_t desired = 0U;
     size_t i;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (paths_used > path_capacity) {
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_CAPACITY);
+        return false;
+    }
+#else
     if (paths_used > path_capacity) return false;
+#endif
     for (i = 0U; i < builder->source_count; ++i) {
         library_scanner_record_t *current = builder_source_at(builder, i);
         uintptr_t base = (uintptr_t)(void *)paths;
@@ -358,11 +456,37 @@ static bool order_paths(library_snapshot_builder_t *builder, char *paths,
         size_t current_offset;
         size_t length;
         size_t j;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        if (address < base || address >= base + path_capacity) {
+            builder_record_failure(
+                builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_FREEZE);
+            return false;
+        }
+#else
         if (address < base || address >= base + path_capacity) return false;
+#endif
         current_offset = (size_t)(address - base);
         length = strlen(current->logical_path) + 1U;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        if (length > sizeof(temporary)) {
+            builder_record_failure(
+                builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_CAPACITY);
+            return false;
+        }
+        if (current_offset < desired) {
+            builder_record_failure(
+                builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_FREEZE);
+            return false;
+        }
+        if (current_offset + length > path_capacity) {
+            builder_record_failure(
+                builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_CAPACITY);
+            return false;
+        }
+#else
         if (length > sizeof(temporary) || current_offset < desired ||
             current_offset + length > path_capacity) return false;
+#endif
         memcpy(temporary, current->logical_path, length);
         if (current_offset > desired) {
             memmove(paths + desired + length, paths + desired,
@@ -381,7 +505,16 @@ static bool order_paths(library_snapshot_builder_t *builder, char *paths,
         current->logical_path = paths + desired;
         desired += length;
     }
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (desired != paths_used) {
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_FREEZE);
+        return false;
+    }
+    return true;
+#else
     return desired == paths_used;
+#endif
 }
 
 static void seed_from_record(record_seed_t *seed,
@@ -439,8 +572,17 @@ static bool repack_storage(library_snapshot_builder_t *builder,
     size_t seed_at = 0U;
     rom_fingerprint_t previous;
     bool have_previous = false;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (sources_offset > storage_size ||
+        sources_bytes > storage_size - sources_offset) {
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_FREEZE);
+        return false;
+    }
+#else
     if (sources_offset > storage_size ||
         sources_bytes > storage_size - sources_offset) return false;
+#endif
 
     for (i = 0U; i < builder->source_count; ++i) {
         library_scanner_record_t input = *builder_source_at(builder, i);
@@ -448,7 +590,15 @@ static bool repack_storage(library_snapshot_builder_t *builder,
         memset(&output, 0, sizeof(output));
         if (!have_previous ||
             !rom_fingerprint_equal(&previous, &input.fingerprint)) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            if (seed_at >= record_count) {
+                builder_record_failure(
+                    builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_FREEZE);
+                return false;
+            }
+#else
             if (seed_at >= record_count) return false;
+#endif
             previous = input.fingerprint;
             have_previous = true;
             seed_from_record(&seeds[seed_at++], &input, i);
@@ -467,7 +617,15 @@ static bool repack_storage(library_snapshot_builder_t *builder,
         memcpy((unsigned char *)storage + i * sizeof(output),
                &output, sizeof(output));
     }
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (seed_at != record_count) {
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_FREEZE);
+        return false;
+    }
+#else
     if (seed_at != record_count) return false;
+#endif
     memmove((unsigned char *)storage + sources_offset, storage, sources_bytes);
     memset(storage, 0, records_bytes);
     for (i = 0U; i < record_count; ++i) {
@@ -483,7 +641,15 @@ static snapshot_payload_t *payload_create(library_snapshot_builder_t *builder)
 {
     snapshot_payload_t *payload = builder->allocator.calloc_fn(
         builder->allocator.context, 1U, sizeof(*payload));
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (payload == NULL) {
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_ALLOCATION);
+        return NULL;
+    }
+#else
     if (payload == NULL) return NULL;
+#endif
     payload->allocator = builder->allocator;
     payload->magic = PAYLOAD_MAGIC;
     payload->refcount = 1U;
@@ -523,6 +689,10 @@ bool library_snapshot_builder_freeze(library_snapshot_builder_t *builder,
     if (out != NULL) *out = NULL;
     if (builder == NULL || out == NULL || builder->failed || builder->frozen ||
         generation == 0U || !detach_scanner(builder)) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_FREEZE);
+#endif
         if (builder != NULL) builder->failed = true;
         return false;
     }
@@ -554,6 +724,10 @@ bool library_snapshot_builder_freeze(library_snapshot_builder_t *builder,
     if (!inspect_sorted(builder, &record_count, &paths_used) ||
         (builder->source_count != 0U &&
          !order_paths(builder, paths, path_capacity, paths_used))) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_FREEZE);
+#endif
         builder->failed = true;
         return false;
     }
@@ -561,6 +735,10 @@ bool library_snapshot_builder_freeze(library_snapshot_builder_t *builder,
         seeds = builder->allocator.calloc_fn(builder->allocator.context,
                                              record_count, sizeof(*seeds));
         if (seeds == NULL) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+            builder_record_failure(
+                builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_ALLOCATION);
+#endif
             builder->failed = true;
             return false;
         }
@@ -569,11 +747,21 @@ bool library_snapshot_builder_freeze(library_snapshot_builder_t *builder,
     if (payload != NULL) {
         snapshot = snapshot_handle_create(payload, generation,
                                           LIBRARY_SNAPSHOT_FRESH);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        if (snapshot == NULL) {
+            builder_record_failure(
+                builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_ALLOCATION);
+        }
+#endif
     }
     if (payload == NULL || snapshot == NULL ||
         (builder->source_count != 0U &&
          !repack_storage(builder, storage, storage_size, seeds, record_count,
                          &payload->records, &payload->sources))) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_FREEZE);
+#endif
         builder->allocator.free_fn(builder->allocator.context, snapshot);
         builder->allocator.free_fn(builder->allocator.context, payload);
         builder->allocator.free_fn(builder->allocator.context, seeds);
@@ -603,6 +791,15 @@ bool library_snapshot_builder_freeze(library_snapshot_builder_t *builder,
     *out = snapshot;
     return true;
 }
+
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+library_snapshot_build_failure_t library_snapshot_builder_first_failure(
+    const library_snapshot_builder_t *builder)
+{
+    return builder == NULL ? LIBRARY_SNAPSHOT_BUILD_FAILURE_NONE
+                           : builder->first_failure;
+}
+#endif
 
 void library_snapshot_builder_destroy(library_snapshot_builder_t *builder)
 {
@@ -862,21 +1059,50 @@ bool library_snapshot_store_publish(library_snapshot_store_t *store,
                                     uint32_t error_count)
 {
     library_snapshot_t *candidate = NULL;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (store == NULL || builder == NULL ||
+        store->status != LIBRARY_SNAPSHOT_REVALIDATING ||
+        store->next_generation == 0U) {
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_PUBLICATION);
+        return false;
+    }
+#else
     if (store == NULL || builder == NULL ||
         store->status != LIBRARY_SNAPSHOT_REVALIDATING ||
         store->next_generation == 0U) return false;
+#endif
     cleanup_retired(store);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (store->published != NULL && store->published->refcount > 1U &&
+        store->retired != NULL) {
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_PUBLICATION);
+        return false;
+    }
+#else
     if (store->published != NULL && store->published->refcount > 1U &&
         store->retired != NULL) return false;
+#endif
     if (error_count != 0U ||
         !library_snapshot_builder_freeze(builder, store->next_generation,
                                          &candidate)) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        if (error_count != 0U) {
+            builder_record_failure(
+                builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_PUBLICATION);
+        }
+#endif
         (void)library_snapshot_store_fail(store);
         return false;
     }
     candidate->warning_count = warning_count;
     candidate->error_count = 0U;
     if (!replace_handle(store, candidate)) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        builder_record_failure(
+            builder, LIBRARY_SNAPSHOT_BUILD_FAILURE_PUBLICATION);
+#endif
         library_snapshot_release(candidate);
         (void)library_snapshot_store_fail(store);
         return false;

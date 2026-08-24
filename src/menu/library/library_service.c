@@ -86,20 +86,110 @@ static void reset_transition_state(library_service_t *service)
     service->resume_after_transition = false;
 }
 
+
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+static void observe_adapter(library_service_t *service)
+{
+    library_fs_libdragon_activity_t activity;
+    if (!service->owns_fs) {
+        library_metrics_observe_adapter(NULL, false);
+        return;
+    }
+    memset(&activity, 0, sizeof(activity));
+    if (service->adapter_ready)
+        library_fs_libdragon_activity(&service->owned_fs, &activity);
+    library_metrics_observe_adapter(&activity, true);
+}
+
+static void observe_scanner_failure(library_service_t *service)
+{
+    if (service->scanner != NULL) {
+        library_metrics_set_scanner_failure(
+            library_scanner_first_failure(service->scanner));
+    }
+}
+
+static void observe_builder_failure(library_service_t *service)
+{
+    if (service->builder != NULL) {
+        library_metrics_set_builder_failure(
+            library_snapshot_builder_first_failure(service->builder));
+    }
+}
+
+static void observe_scanner_poll(library_service_t *service,
+                                 uint32_t start, uint32_t end)
+{
+    library_scanner_poll_stats_t stats;
+    library_scanner_last_poll_stats(service->scanner, &stats);
+    library_metrics_record_scanner_poll(start, end, &stats);
+    library_metrics_scan_observe(end);
+    observe_scanner_failure(service);
+    observe_adapter(service);
+}
+
+static void observe_scanner_terminal(library_service_t *service,
+                                     bool complete_generation,
+                                     uint32_t now)
+{
+    observe_scanner_failure(service);
+    library_metrics_scan_terminal(
+        library_scanner_stats(service->scanner),
+        library_scanner_state(service->scanner), complete_generation, now);
+}
+
+static void complete_quiescence_metrics(library_service_t *service)
+{
+    uint32_t now = library_metrics_ticks_now();
+    bool exactly_quiesced = library_service_is_quiesced(service);
+    library_metrics_pause_complete(now, exactly_quiesced);
+    library_metrics_cancel_complete(now, exactly_quiesced);
+}
+
+static void capture_pending_snapshot_detail(library_service_t *service)
+{
+    const library_snapshot_t *snapshot;
+    uint32_t generation;
+    if (library_metrics_critical_interval_active() ||
+        !library_metrics_snapshot_detail_pending(&generation)) {
+        return;
+    }
+    snapshot = library_snapshot_store_acquire(&service->store);
+    if (snapshot == NULL) {
+        library_metrics_invalidate_snapshot_detail(generation);
+        return;
+    }
+    if (library_snapshot_generation(snapshot) != generation ||
+        !library_metrics_capture_snapshot_detail(snapshot)) {
+        library_metrics_invalidate_snapshot_detail(generation);
+    }
+    library_snapshot_release((library_snapshot_t *)snapshot);
+}
+#endif
+
 static bool ensure_adapter(library_service_t *service)
 {
     if (!service->owns_fs || service->adapter_ready) return true;
     if (!library_fs_libdragon_init(&service->owned_fs,
                                    service->storage_prefix)) return false;
     service->adapter_ready = true;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    observe_adapter(service);
+#endif
     return true;
 }
 
 static void release_adapter(library_service_t *service)
 {
     if (!service->owns_fs || !service->adapter_ready) return;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    observe_adapter(service);
+#endif
     library_fs_libdragon_deinit(&service->owned_fs);
     service->adapter_ready = false;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    observe_adapter(service);
+#endif
 }
 
 static bool begin_revalidation(library_service_t *service)
@@ -130,6 +220,9 @@ static bool settle_failure(library_service_t *service)
 
 static void discard_builder(library_service_t *service)
 {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    observe_builder_failure(service);
+#endif
     library_snapshot_builder_destroy(service->builder);
     service->builder = NULL;
     service->publication_pending = false;
@@ -138,6 +231,9 @@ static void discard_builder(library_service_t *service)
 static bool destroy_scanner(library_service_t *service)
 {
     if (service->scanner == NULL) return true;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    observe_scanner_failure(service);
+#endif
     if (!library_scanner_destroy(service->scanner)) return false;
     service->scanner = NULL;
     return true;
@@ -168,6 +264,9 @@ bool library_service_init(library_service_t **out,
         return false;
     }
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    library_metrics_reset();
+#endif
     service = allocator.calloc_fn(allocator.context, 1U, sizeof(*service));
     if (service == NULL) return false;
     service->allocator = allocator;
@@ -179,10 +278,19 @@ bool library_service_init(library_service_t **out,
     library_snapshot_store_init(&service->store);
 
     if (!service->owns_fs && service->fs == NULL) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        service->allocator.free_fn(service->allocator.context, service);
+#else
         allocator.free_fn(allocator.context, service);
+#endif
         return false;
     }
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    observe_adapter(service);
+    library_metrics_heap_sample_current(
+        LIBRARY_METRICS_HEAP_POST_LIBRARY_INIT);
+#endif
     *out = service;
     return true;
 }
@@ -193,9 +301,16 @@ void library_service_request_pause(library_service_t *service)
     service->start_requested = false;
     service->resume_requested = false;
     if (service->scanner == NULL) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        if (!service->paused)
+            library_metrics_pause_request(library_metrics_ticks_now());
+#endif
         service->paused = true;
         service->pause_requested = false;
         release_adapter(service);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        complete_quiescence_metrics(service);
+#endif
         return;
     }
     if (service->publication_pending || service->failure_pending ||
@@ -203,6 +318,9 @@ void library_service_request_pause(library_service_t *service)
         library_scanner_state(service->scanner) == LIBRARY_SCANNER_FAILED) {
         return;
     }
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    library_metrics_pause_request(library_metrics_ticks_now());
+#endif
     service->pause_requested = true;
     library_scanner_request_pause(service->scanner);
 }
@@ -216,6 +334,9 @@ void library_service_resume(library_service_t *service)
 void library_service_request_cancel(library_service_t *service)
 {
     if (service == NULL) return;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    library_metrics_cancel_request(library_metrics_ticks_now());
+#endif
     reset_transition_state(service);
     service->start_requested = false;
     service->resume_requested = false;
@@ -226,6 +347,9 @@ void library_service_request_cancel(library_service_t *service)
         !service->failure_pending && !service->publication_pending) {
         service->cancel_requested = false;
         release_adapter(service);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        complete_quiescence_metrics(service);
+#endif
         return;
     }
     service->cancel_requested = true;
@@ -236,6 +360,9 @@ void library_service_request_cancel(library_service_t *service)
 void library_service_restart(library_service_t *service)
 {
     if (service == NULL) return;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    library_metrics_lifecycle_reset();
+#endif
     reset_transition_state(service);
     service->resume_requested = false;
     service->pause_requested = false;
@@ -252,12 +379,36 @@ void library_service_restart(library_service_t *service)
 
 static void poll_cancel(library_service_t *service)
 {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    uint32_t poll_start;
+    uint32_t poll_end;
+#endif
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    if (service->builder != NULL) {
+        if (service->scanner != NULL) {
+            library_metrics_publication_failed(
+                library_scanner_generation(service->scanner));
+        }
+        discard_builder(service);
+    }
+#else
     if (service->builder != NULL) discard_builder(service);
+#endif
     if (service->scanner != NULL) {
         library_scanner_request_cancel(service->scanner);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        poll_start = library_metrics_ticks_now();
+#endif
         (void)library_scanner_poll(service->scanner, &service->budget);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        poll_end = library_metrics_ticks_now();
+        observe_scanner_poll(service, poll_start, poll_end);
+#endif
         if (library_scanner_state(service->scanner) != LIBRARY_SCANNER_IDLE)
             return;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        observe_scanner_terminal(service, false, poll_end);
+#endif
         if (!destroy_scanner(service)) return;
     }
     if (!settle_failure(service)) return;
@@ -269,6 +420,10 @@ static void poll_cancel(library_service_t *service)
 
 static void poll_pause(library_service_t *service)
 {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    uint32_t poll_start;
+    uint32_t poll_end;
+#endif
     if (service->scanner == NULL) {
         service->pause_requested = false;
         service->paused = true;
@@ -276,7 +431,14 @@ static void poll_pause(library_service_t *service)
         return;
     }
     library_scanner_request_pause(service->scanner);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    poll_start = library_metrics_ticks_now();
+#endif
     (void)library_scanner_poll(service->scanner, &service->budget);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    poll_end = library_metrics_ticks_now();
+    observe_scanner_poll(service, poll_start, poll_end);
+#endif
     if (library_scanner_state(service->scanner) == LIBRARY_SCANNER_QUIESCED) {
         service->pause_requested = false;
         service->paused = true;
@@ -302,6 +464,12 @@ static bool create_and_start(library_service_t *service, bool *retryable)
         (void)settle_failure(service);
         return false;
     }
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    library_metrics_scan_attempt(
+        library_scanner_generation(service->scanner),
+        library_metrics_ticks_now());
+    observe_adapter(service);
+#endif
     service->start_requested = false;
     service->resume_requested = false;
     service->resume_after_transition = false;
@@ -315,6 +483,11 @@ static void prepare_publication(library_service_t *service)
                                          &service->allocator) ||
         !library_snapshot_builder_add_scanner(service->builder,
                                               service->scanner)) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        observe_builder_failure(service);
+        library_metrics_publication_failed(
+            library_scanner_generation(service->scanner));
+#endif
         discard_builder(service);
         service->failure_pending = true;
         return;
@@ -333,18 +506,35 @@ static void publish_snapshot(library_service_t *service)
                             ? 0U
                             : stats->candidate_failures +
                                   stats->mutation_failures;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    const library_snapshot_t *published_snapshot;
+    uint32_t generation = library_scanner_generation(service->scanner);
+    observe_builder_failure(service);
+#endif
 
     if (library_snapshot_store_publish(&service->store, service->builder,
                                        warnings, 0U)) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        published_snapshot = library_snapshot_store_acquire(&service->store);
+        library_metrics_publication_succeeded(generation,
+                                              published_snapshot);
+        library_snapshot_release((library_snapshot_t *)published_snapshot);
+#endif
         service->builder = NULL; /* consumed by the store */
         service->publication_pending = false;
         (void)destroy_scanner(service);
         return;
     }
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    observe_builder_failure(service);
+#endif
     if (library_snapshot_store_status(&service->store) ==
         LIBRARY_SNAPSHOT_REVALIDATING) {
         return; /* retired-reader refusal happened before freeze; retry */
     }
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    library_metrics_publication_failed(generation);
+#endif
     discard_builder(service);
     (void)destroy_scanner(service);
 }
@@ -354,19 +544,33 @@ void library_service_poll(library_service_t *service, menu_mode_t mode)
     library_scan_result_t result;
     bool retryable;
     bool safe;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    uint32_t poll_start;
+    uint32_t poll_end;
+#endif
 
     if (service == NULL || service->in_poll) return;
     service->in_poll = true;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    capture_pending_snapshot_detail(service);
+    observe_adapter(service);
+#endif
     safe = safe_mode(mode);
 
     if (service->cancel_requested) {
         poll_cancel(service);
         service->in_poll = false;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        complete_quiescence_metrics(service);
+#endif
         return;
     }
     if (service->pause_requested) {
         poll_pause(service);
         service->in_poll = false;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        complete_quiescence_metrics(service);
+#endif
         return;
     }
     if (service->failure_pending) {
@@ -413,7 +617,18 @@ void library_service_poll(library_service_t *service, menu_mode_t mode)
 
     if (service->scanner != NULL &&
         library_scanner_state(service->scanner) == LIBRARY_SCANNER_SCANNING) {
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        poll_start = library_metrics_ticks_now();
+#endif
         result = library_scanner_poll(service->scanner, &service->budget);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+        poll_end = library_metrics_ticks_now();
+        observe_scanner_poll(service, poll_start, poll_end);
+        if (result == LIBRARY_SCAN_COMPLETED ||
+            result == LIBRARY_SCAN_FAILED_RESULT) {
+            observe_scanner_terminal(service, true, poll_end);
+        }
+#endif
         if (result == LIBRARY_SCAN_FAILED_RESULT)
             service->failure_pending = true;
     }
@@ -446,6 +661,18 @@ void library_service_snapshot_release(const library_snapshot_t *snapshot)
 {
     library_snapshot_release((library_snapshot_t *)snapshot);
 }
+
+
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+void library_service_layer1_summary(
+    const library_service_t *service, library_metrics_snapshot_t *out)
+{
+    if (out == NULL) return;
+    memset(out, 0, sizeof(*out));
+    if (service == NULL) return;
+    library_metrics_snapshot(out);
+}
+#endif
 
 bool library_service_coordinate_transition(library_service_t *service,
                                            menu_mode_t current,
@@ -492,6 +719,13 @@ void library_service_free(library_service_t *service)
     library_allocator_t allocator;
     if (service == NULL || !library_service_is_quiesced(service)) return;
     if (service->builder != NULL) return;
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+    {
+        uint32_t generation;
+        if (library_metrics_snapshot_detail_pending(&generation))
+            library_metrics_invalidate_snapshot_detail(generation);
+    }
+#endif
     if (!destroy_scanner(service)) return;
     release_adapter(service);
     library_snapshot_store_deinit(&service->store);

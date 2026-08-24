@@ -1,6 +1,16 @@
 #define TEST_NO_MAIN
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #include "acutest.h"
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 #include "menu/library/library_snapshot.h"
+#if LAYER1_FOUNDATION_FOCUSED_TESTS
+#include "menu/library/library_metrics.h"
+#endif
 
 #include <stdlib.h>
 #include <string.h>
@@ -466,3 +476,250 @@ void test_library_snapshot_heap_accounting(void)
     library_snapshot_store_deinit(&store);
     TEST_CHECK(state.live_bytes == 0U);
 }
+
+#if LAYER1_FOUNDATION_FOCUSED_TESTS
+void test_layer1_snapshot_builder_failure_taxonomy(void)
+{
+    library_scanner_record_t value =
+        sample("/failure.z64", 31U, ROM_BYTE_ORDER_Z64);
+    library_snapshot_builder_t *builder = NULL;
+    library_snapshot_t *snapshot = NULL;
+    library_snapshot_store_t store;
+
+    {
+        snapshot_alloc_t state = { 0U, SIZE_MAX, 0U, 0U, 0U };
+        library_allocator_t allocator = tracked_allocator(&state);
+        TEST_ASSERT(library_snapshot_builder_create(&builder, &allocator));
+        state.fail_at = state.calls;
+        TEST_CHECK(!library_snapshot_builder_add(builder, &value));
+        TEST_CHECK(library_snapshot_builder_first_failure(builder) ==
+                   LIBRARY_SNAPSHOT_BUILD_FAILURE_ALLOCATION);
+        TEST_CHECK(!library_snapshot_builder_add(builder, NULL));
+        TEST_CHECK(library_snapshot_builder_first_failure(builder) ==
+                   LIBRARY_SNAPSHOT_BUILD_FAILURE_ALLOCATION);
+        library_snapshot_builder_destroy(builder);
+        builder = NULL;
+        TEST_CHECK(state.live_bytes == 0U);
+    }
+
+    {
+        char too_long[LIBRARY_SNAPSHOT_PATH_BYTES + 1U];
+        memset(too_long, 'x', sizeof(too_long));
+        too_long[0] = '/';
+        too_long[sizeof(too_long) - 1U] = '\0';
+        value.logical_path = too_long;
+        TEST_ASSERT(library_snapshot_builder_create(&builder, NULL));
+        TEST_CHECK(!library_snapshot_builder_add(builder, &value));
+        TEST_CHECK(library_snapshot_builder_first_failure(builder) ==
+                   LIBRARY_SNAPSHOT_BUILD_FAILURE_CAPACITY);
+        TEST_CHECK(!library_snapshot_builder_add(builder, NULL));
+        TEST_CHECK(library_snapshot_builder_first_failure(builder) ==
+                   LIBRARY_SNAPSHOT_BUILD_FAILURE_CAPACITY);
+        library_snapshot_builder_destroy(builder);
+        builder = NULL;
+    }
+
+    {
+        library_scanner_record_t first =
+            sample("/first.z64", 32U, ROM_BYTE_ORDER_Z64);
+        library_scanner_record_t conflict =
+            sample("/conflict.z64", 32U, ROM_BYTE_ORDER_Z64);
+        ++conflict.source_signature.size;
+        TEST_ASSERT(library_snapshot_builder_create(&builder, NULL));
+        TEST_ASSERT(library_snapshot_builder_add(builder, &first));
+        TEST_CHECK(!library_snapshot_builder_add(builder, &conflict));
+        TEST_CHECK(library_snapshot_builder_first_failure(builder) ==
+                   LIBRARY_SNAPSHOT_BUILD_FAILURE_INGESTION);
+        TEST_CHECK(!library_snapshot_builder_freeze(builder, 1U, &snapshot));
+        TEST_CHECK(library_snapshot_builder_first_failure(builder) ==
+                   LIBRARY_SNAPSHOT_BUILD_FAILURE_INGESTION);
+        library_snapshot_builder_destroy(builder);
+        builder = NULL;
+    }
+
+    value = sample("/freeze.z64", 33U, ROM_BYTE_ORDER_Z64);
+    TEST_ASSERT(library_snapshot_builder_create(&builder, NULL));
+    TEST_ASSERT(library_snapshot_builder_add(builder, &value));
+    TEST_CHECK(!library_snapshot_builder_freeze(builder, 0U, &snapshot));
+    TEST_CHECK(library_snapshot_builder_first_failure(builder) ==
+               LIBRARY_SNAPSHOT_BUILD_FAILURE_FREEZE);
+    TEST_CHECK(!library_snapshot_builder_add(builder, NULL));
+    TEST_CHECK(library_snapshot_builder_first_failure(builder) ==
+               LIBRARY_SNAPSHOT_BUILD_FAILURE_FREEZE);
+    library_snapshot_builder_destroy(builder);
+    builder = NULL;
+
+    value = sample("/publication.z64", 34U, ROM_BYTE_ORDER_Z64);
+    library_snapshot_store_init(&store);
+    TEST_ASSERT(library_snapshot_builder_create(&builder, NULL));
+    TEST_ASSERT(library_snapshot_builder_add(builder, &value));
+    TEST_CHECK(!library_snapshot_store_publish(&store, builder, 0U, 0U));
+    TEST_CHECK(library_snapshot_builder_first_failure(builder) ==
+               LIBRARY_SNAPSHOT_BUILD_FAILURE_PUBLICATION);
+    TEST_CHECK(!library_snapshot_builder_add(builder, NULL));
+    TEST_CHECK(library_snapshot_builder_first_failure(builder) ==
+               LIBRARY_SNAPSHOT_BUILD_FAILURE_PUBLICATION);
+    library_snapshot_builder_destroy(builder);
+    library_snapshot_store_deinit(&store);
+}
+
+void test_layer1_snapshot_deferred_detail(void)
+{
+    library_scanner_record_t value =
+        sample("/detail.z64", 35U, ROM_BYTE_ORDER_Z64);
+    library_snapshot_builder_t *builder = NULL;
+    library_snapshot_t *snapshot = NULL;
+    library_metrics_snapshot_t metrics_snapshot;
+    uint32_t generation = 0U;
+
+    TEST_ASSERT(library_snapshot_builder_create(&builder, NULL));
+    TEST_ASSERT(library_snapshot_builder_add(builder, &value));
+    TEST_ASSERT(library_snapshot_builder_freeze(builder, 7U, &snapshot));
+    library_snapshot_builder_destroy(builder);
+
+    library_metrics_reset();
+    library_metrics_publication_succeeded(7U, snapshot);
+    TEST_CHECK(library_metrics_snapshot_detail_pending(&generation));
+    TEST_CHECK(generation == 7U);
+    TEST_ASSERT(library_metrics_capture_snapshot_detail(snapshot));
+    library_metrics_snapshot(&metrics_snapshot);
+    TEST_CHECK(metrics_snapshot.retained_path_detail_valid);
+    TEST_CHECK(!metrics_snapshot.retained_path_detail_pending);
+    TEST_CHECK(metrics_snapshot.retained_path_count == 1U);
+    TEST_CHECK(metrics_snapshot.retained_path_bytes ==
+               strlen("/detail.z64") + 1U);
+
+    library_metrics_reset();
+    library_metrics_publication_succeeded(8U, snapshot);
+    TEST_CHECK(!library_metrics_capture_snapshot_detail(snapshot));
+    library_metrics_invalidate_snapshot_detail(7U);
+    TEST_CHECK(library_metrics_snapshot_detail_pending(&generation));
+    TEST_CHECK(generation == 8U);
+    library_metrics_invalidate_snapshot_detail(8U);
+    TEST_CHECK(!library_metrics_snapshot_detail_pending(&generation));
+    library_metrics_snapshot(&metrics_snapshot);
+    TEST_CHECK(!metrics_snapshot.retained_path_detail_valid);
+    TEST_CHECK(!metrics_snapshot.retained_path_detail_pending);
+    library_snapshot_release(snapshot);
+}
+
+void test_layer1_snapshot_publication_metrics(void)
+{
+    library_snapshot_store_t store;
+    library_snapshot_builder_t *builder = NULL;
+    library_snapshot_t *snapshot;
+    library_scanner_record_t first =
+        sample("/pub/a.z64", 36U, ROM_BYTE_ORDER_Z64);
+    library_scanner_record_t second =
+        sample("/pub/b.z64", 36U, ROM_BYTE_ORDER_V64);
+    library_metrics_snapshot_t metrics_snapshot;
+
+    library_snapshot_store_init(&store);
+    TEST_ASSERT(library_snapshot_builder_create(&builder, NULL));
+    TEST_ASSERT(library_snapshot_builder_add(builder, &first));
+    TEST_ASSERT(library_snapshot_builder_add(builder, &second));
+    begin_refresh(&store);
+    TEST_ASSERT(library_snapshot_store_publish(&store, builder, 3U, 0U));
+    snapshot = library_snapshot_store_acquire(&store);
+    TEST_ASSERT(snapshot != NULL);
+
+    library_metrics_reset();
+    library_metrics_publication_succeeded(1U, snapshot);
+    library_metrics_snapshot(&metrics_snapshot);
+    TEST_CHECK(metrics_snapshot.publication_facts_valid);
+    TEST_CHECK(!metrics_snapshot.publication_failed);
+    TEST_CHECK(metrics_snapshot.published_generation == 1U);
+    TEST_CHECK(metrics_snapshot.record_count == 1U);
+    TEST_CHECK(metrics_snapshot.retained_path_count == 2U);
+    TEST_CHECK(metrics_snapshot.warning_count == 3U);
+    TEST_CHECK(metrics_snapshot.error_count == 0U);
+    TEST_CHECK(metrics_snapshot.retained_path_detail_pending);
+
+    library_metrics_publication_failed(1U);
+    library_metrics_snapshot(&metrics_snapshot);
+    TEST_CHECK(metrics_snapshot.publication_failed);
+    TEST_CHECK(!metrics_snapshot.retained_path_detail_pending);
+    TEST_CHECK(!metrics_snapshot.retained_path_detail_valid);
+    TEST_CHECK(metrics_snapshot.published_generation == 1U);
+    TEST_CHECK(metrics_snapshot.record_count == 1U);
+    TEST_CHECK(metrics_snapshot.warning_count == 3U);
+    TEST_CHECK(metrics_snapshot.error_count == 0U);
+
+    library_snapshot_release(snapshot);
+    library_snapshot_store_deinit(&store);
+}
+
+void test_layer1_snapshot_allocation_ledger(void)
+{
+    snapshot_alloc_t state = { 0U, SIZE_MAX, 0U, 0U, 0U };
+    library_allocator_t base = tracked_allocator(&state);
+    library_allocator_t wrapped;
+    library_metrics_allocator_wrapper_t wrapper;
+    library_metrics_snapshot_t metrics_snapshot;
+    void *first;
+    void *second;
+    void *blocks[LIBRARY_METRICS_ALLOC_LEDGER_CAPACITY + 1U];
+    size_t index;
+
+    library_metrics_reset();
+    library_metrics_allocator_wrap(&wrapper, &base, &wrapped);
+    first = wrapped.malloc_fn(wrapped.context, 16U);
+    second = wrapped.calloc_fn(wrapped.context, 3U, 8U);
+    TEST_ASSERT(first != NULL && second != NULL);
+    library_metrics_snapshot(&metrics_snapshot);
+    TEST_CHECK(metrics_snapshot.allocation_accounting_available);
+    TEST_CHECK(metrics_snapshot.owned_allocation_current_bytes == 40U);
+    TEST_CHECK(metrics_snapshot.owned_allocation_peak_bytes == 40U);
+    TEST_CHECK(metrics_snapshot.owned_allocation_current_count == 2U);
+    TEST_CHECK(metrics_snapshot.owned_allocation_peak_count == 2U);
+    TEST_CHECK(!metrics_snapshot.allocation_invalid);
+    wrapped.free_fn(wrapped.context, first);
+    wrapped.free_fn(wrapped.context, second);
+    library_metrics_snapshot(&metrics_snapshot);
+    TEST_CHECK(metrics_snapshot.owned_allocation_current_bytes == 0U);
+    TEST_CHECK(metrics_snapshot.owned_allocation_current_count == 0U);
+    TEST_CHECK(!metrics_snapshot.allocation_invalid);
+    TEST_CHECK(state.live_bytes == 0U);
+
+    library_metrics_reset();
+    library_metrics_allocator_wrap(&wrapper, &base, &wrapped);
+    for (index = 0U; index < LIBRARY_METRICS_ALLOC_LEDGER_CAPACITY + 1U;
+         ++index) {
+        blocks[index] = wrapped.malloc_fn(wrapped.context, 1U);
+        TEST_ASSERT(blocks[index] != NULL);
+    }
+    library_metrics_snapshot(&metrics_snapshot);
+    TEST_CHECK(metrics_snapshot.allocation_invalid);
+    TEST_CHECK(metrics_snapshot.owned_allocation_current_count ==
+               LIBRARY_METRICS_ALLOC_LEDGER_CAPACITY);
+    TEST_CHECK(metrics_snapshot.owned_allocation_peak_count ==
+               LIBRARY_METRICS_ALLOC_LEDGER_CAPACITY);
+    for (index = 0U; index < LIBRARY_METRICS_ALLOC_LEDGER_CAPACITY + 1U;
+         ++index) {
+        wrapped.free_fn(wrapped.context, blocks[index]);
+    }
+    library_metrics_snapshot(&metrics_snapshot);
+    TEST_CHECK(metrics_snapshot.allocation_invalid);
+    TEST_CHECK(metrics_snapshot.owned_allocation_current_bytes == 0U);
+    TEST_CHECK(metrics_snapshot.owned_allocation_current_count == 0U);
+    TEST_CHECK(state.live_bytes == 0U);
+}
+
+void test_layer1_snapshot_saturation_boundaries(void)
+{
+    bool overflow = false;
+    bool valid = false;
+
+    TEST_CHECK(library_metrics_saturating_add(10U, 20U, &overflow) == 30U);
+    TEST_CHECK(!overflow);
+    overflow = false;
+    TEST_CHECK(library_metrics_saturating_add(UINT64_MAX - 1U, 2U,
+                                              &overflow) == UINT64_MAX);
+    TEST_CHECK(overflow);
+    TEST_CHECK(library_metrics_tick_delta(UINT32_MAX - 2U, 1U, &valid) == 4U);
+    TEST_CHECK(valid);
+    TEST_CHECK(library_metrics_tick_delta(0U,
+        (uint32_t)INT32_MAX + 1U, &valid) == 0U);
+    TEST_CHECK(!valid);
+}
+#endif

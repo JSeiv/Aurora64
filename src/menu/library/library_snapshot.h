@@ -22,6 +22,17 @@ typedef enum {
     LIBRARY_SNAPSHOT_FAILED_STALE
 } library_snapshot_status_t;
 
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+typedef enum {
+    LIBRARY_SNAPSHOT_BUILD_FAILURE_NONE = 0,
+    LIBRARY_SNAPSHOT_BUILD_FAILURE_ALLOCATION,
+    LIBRARY_SNAPSHOT_BUILD_FAILURE_CAPACITY,
+    LIBRARY_SNAPSHOT_BUILD_FAILURE_INGESTION,
+    LIBRARY_SNAPSHOT_BUILD_FAILURE_FREEZE,
+    LIBRARY_SNAPSHOT_BUILD_FAILURE_PUBLICATION
+} library_snapshot_build_failure_t;
+#endif
+
 typedef struct {
     library_lookup_kind_t kind;
     char cartridge_id[3];
@@ -79,6 +90,10 @@ bool library_snapshot_builder_freeze(library_snapshot_builder_t *builder,
                                      uint32_t generation,
                                      library_snapshot_t **out);
 void library_snapshot_builder_destroy(library_snapshot_builder_t *builder);
+#if FEATURE_AURORA_LIBRARY_TIMING_ENABLED
+library_snapshot_build_failure_t library_snapshot_builder_first_failure(
+    const library_snapshot_builder_t *builder);
+#endif
 
 /* Acquire fails closed at refcount saturation; every success requires release. */
 bool library_snapshot_acquire(library_snapshot_t *snapshot);

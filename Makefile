@@ -16,6 +16,17 @@ ifeq ($(AURORA64_LIBRARY_ORIGIN),undefined)
 AURORA64_LIBRARY := $(if $(filter 1,$(AURORA64_LAUNCH_PROOF)),1,0)
 endif
 AURORA64_LIBRARY_TIMING ?= 0
+ifneq ($(AURORA64_LIBRARY_TIMING),0)
+ifneq ($(AURORA64_LIBRARY_TIMING),1)
+$(error invalid AURORA64_LIBRARY_TIMING value '$(AURORA64_LIBRARY_TIMING)'; expected 0 or 1)
+endif
+endif
+
+ifeq ($(AURORA64_LIBRARY_TIMING),1)
+ifneq ($(AURORA64_LIBRARY),1)
+$(error AURORA64_LIBRARY_TIMING=1 requires AURORA64_LIBRARY=1)
+endif
+endif
 BUILD_TIMESTAMP = "$(shell TZ='UTC' date "+%Y-%m-%d %H:%M:%S %:z")"
 
 HOST_TEST_GOALS := host-test host-test-sanitize
@@ -116,6 +127,10 @@ SRCS = \
 	menu/views/cpak_note_dump_info.c \
 	utils/cpakfs_utils.c \
 	utils/fs.c
+
+ifeq ($(AURORA64_LIBRARY_TIMING),1)
+SRCS += menu/library/library_metrics.c
+endif
 
 FONTS = \
 	Firple-Bold.ttf
@@ -249,9 +264,9 @@ host-test-sanitize:
 .PHONY: host-test-sanitize
 
 print-library-config:
-	@printf 'home=%s library=%s launch_proof=%s library_origin=%s\n' \
+	@printf 'home=%s library=%s launch_proof=%s library_timing=%s library_origin=%s\n' \
 		'$(AURORA64_HOME)' '$(AURORA64_LIBRARY)' '$(AURORA64_LAUNCH_PROOF)' \
-		'$(AURORA64_LIBRARY_ORIGIN)'
+		'$(AURORA64_LIBRARY_TIMING)' '$(AURORA64_LIBRARY_ORIGIN)'
 .PHONY: print-library-config
 
 .FORCE:

@@ -1,6 +1,12 @@
 #define TEST_NO_MAIN
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #include "acutest.h"
-
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 #include "menu/library/library_scanner.h"
 #include "menu/library/library_snapshot.h"
 #include "support/fake_library_fs.h"
@@ -782,3 +788,128 @@ void test_library_scanner_512_compatible_sources(void)
     library_snapshot_builder_destroy(builder);
     library_scanner_destroy(scanner);
 }
+
+#if LAYER1_FOUNDATION_FOCUSED_TESTS
+void test_layer1_scanner_poll_stats_budgets(void)
+{
+    scanner_fs_t fs;
+    scanner_alloc_t alloc = { 0U, 0U, SIZE_MAX };
+    library_scanner_t *scanner;
+    library_scan_budget_t zero = { 0U, 0U, 0U };
+    library_scan_budget_t bounded = { 1U, 37U, 1000U };
+    library_scanner_poll_stats_t stats;
+
+    scanner_fs_init(&fs);
+    add_rom(&fs, "/game.z64", "game.z64", 0U);
+    scanner = new_scanner(&fs, &alloc);
+    TEST_CHECK(library_scanner_poll(scanner, &zero) == LIBRARY_SCAN_YIELDED);
+    library_scanner_last_poll_stats(scanner, &stats);
+    TEST_CHECK(stats.directory_entries == 0U);
+    TEST_CHECK(stats.read_bytes == 0U);
+
+    fs.poll_read_bytes = 0U;
+    (void)library_scanner_poll(scanner, &bounded);
+    library_scanner_last_poll_stats(scanner, &stats);
+    TEST_CHECK(stats.directory_entries <= bounded.max_directory_entries);
+    TEST_CHECK(stats.read_bytes <= bounded.max_read_bytes);
+    TEST_CHECK(fs.poll_read_bytes <= bounded.max_read_bytes);
+    TEST_CHECK(stats.directory_entries != 0U || stats.read_bytes != 0U);
+
+    library_scanner_request_cancel(scanner);
+    poll_to_terminal(scanner, 1U, 64U);
+    TEST_CHECK(library_scanner_destroy(scanner));
+    TEST_CHECK(alloc.live == 0U);
+}
+
+void test_layer1_scanner_poll_stats_tick_expiry(void)
+{
+    scanner_fs_t fs;
+    scanner_alloc_t alloc = { 0U, 0U, SIZE_MAX };
+    library_scanner_t *scanner;
+    library_scan_budget_t budget = { 1U, 4096U, 5U };
+    library_scanner_poll_stats_t stats;
+    size_t reads_before;
+
+    scanner_fs_init(&fs);
+    add_rom(&fs, "/game.z64", "game.z64", 0U);
+    fs.tick_per_call = 6U;
+    scanner = new_scanner(&fs, &alloc);
+    reads_before = fs.reads;
+    (void)library_scanner_poll(scanner, &budget);
+    library_scanner_last_poll_stats(scanner, &stats);
+    TEST_CHECK(fs.reads - reads_before == 1U);
+    TEST_CHECK(stats.directory_entries <= budget.max_directory_entries);
+    TEST_CHECK(stats.read_bytes <= budget.max_read_bytes);
+    TEST_CHECK(stats.read_bytes != 0U);
+
+    library_scanner_request_cancel(scanner);
+    poll_to_terminal(scanner, 1U, 64U);
+    TEST_CHECK(library_scanner_destroy(scanner));
+    TEST_CHECK(alloc.live == 0U);
+}
+
+void test_layer1_scanner_failure_filesystem(void)
+{
+    scanner_fs_t fs;
+    scanner_alloc_t alloc = { 0U, 0U, SIZE_MAX };
+    library_scanner_t *scanner;
+
+    scanner_fs_init(&fs);
+    TEST_ASSERT(fake_library_fs_add_directory(&fs.fake, "/", NULL, 0U));
+    fake_library_fs_fail_dir_open(&fs.fake, "/");
+    scanner = new_scanner(&fs, &alloc);
+    poll_to_terminal(scanner, 1U, 64U);
+    TEST_CHECK(library_scanner_state(scanner) == LIBRARY_SCANNER_FAILED);
+    TEST_CHECK(library_scanner_first_failure(scanner) ==
+               LIBRARY_SCANNER_FAILURE_FILESYSTEM);
+    TEST_CHECK(library_scanner_destroy(scanner));
+    TEST_CHECK(alloc.live == 0U);
+}
+
+void test_layer1_scanner_failure_candidate_io(void)
+{
+    scanner_fs_t fs;
+    scanner_alloc_t alloc = { 0U, 0U, SIZE_MAX };
+    library_scanner_t *scanner;
+
+    scanner_fs_init(&fs);
+    add_rom(&fs, "/game.z64", "game.z64", 0U);
+    fs.fail_read_call = 1U;
+    scanner = new_scanner(&fs, &alloc);
+    poll_to_terminal(scanner, 1U, 64U);
+    TEST_CHECK(library_scanner_state(scanner) == LIBRARY_SCANNER_COMPLETE);
+    TEST_CHECK(library_scanner_result_count(scanner) == 0U);
+    TEST_CHECK(library_scanner_first_failure(scanner) ==
+               LIBRARY_SCANNER_FAILURE_CANDIDATE_IO);
+    TEST_CHECK(library_scanner_destroy(scanner));
+    TEST_CHECK(alloc.live == 0U);
+}
+
+void test_layer1_scanner_failure_mutation_and_precedence(void)
+{
+    scanner_fs_t fs;
+    scanner_alloc_t alloc = { 0U, 0U, SIZE_MAX };
+    library_scanner_t *scanner;
+
+    scanner_fs_init(&fs);
+    add_rom(&fs, "/game.z64", "game.z64", 0U);
+    fs.mutate_each_second_open = true;
+    scanner = new_scanner(&fs, &alloc);
+    poll_to_terminal(scanner, 1U, 64U);
+    TEST_CHECK(library_scanner_first_failure(scanner) ==
+               LIBRARY_SCANNER_FAILURE_MUTATION);
+    TEST_CHECK(library_scanner_destroy(scanner));
+
+    scanner_fs_init(&fs);
+    add_rom(&fs, "/game.z64", "game.z64", 0U);
+    fs.fail_read_call = 1U;
+    fake_library_fs_fail_dir_next(&fs.fake, 1U);
+    scanner = new_scanner(&fs, &alloc);
+    poll_to_terminal(scanner, 1U, 64U);
+    TEST_CHECK(library_scanner_state(scanner) == LIBRARY_SCANNER_FAILED);
+    TEST_CHECK(library_scanner_first_failure(scanner) ==
+               LIBRARY_SCANNER_FAILURE_CANDIDATE_IO);
+    TEST_CHECK(library_scanner_destroy(scanner));
+    TEST_CHECK(alloc.live == 0U);
+}
+#endif
